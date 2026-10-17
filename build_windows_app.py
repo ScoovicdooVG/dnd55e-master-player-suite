@@ -5,7 +5,6 @@ from PIL import Image
 
 
 def ensure_custom_ico(root: Path) -> Path:
-    """Usa el dnd55_logo.ico del usuario o lo genera desde su dnd55_logo.png conservando transparencia."""
     ico_path = root / "dnd55_logo.ico"
     png_path = root / "dnd55_logo.png"
 
@@ -47,9 +46,9 @@ def build_exe():
     if png_path.exists():
         cmd.insert(-1, f"--add-data={png_path};.")
 
-    print("⏳ Empaquetando aplicación de Windows con tu logo personalizado...")
+    print("Empaquetando aplicación de Windows con tu logo personalizado...")
     subprocess.run(cmd, check=True)
-    print("\n🎉 ¡Listo! Tu ejecutable está en: D:\\dnd55_suite\\dist\\DnD55e_Suite\\DnD55e_Suite.exe")
+    print("\n¡Listo! Tu ejecutable está en: D:\\dnd55_suite\\dist\\DnD55e_Suite\\DnD55e_Suite.exe")
 
 
 if __name__ == "__main__":
