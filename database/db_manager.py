@@ -412,7 +412,7 @@ class DatabaseManager:
             coins["gp"] = max(0, int(coins.get("gp", 0)) + gp_bonus)
         char["stats"] = stats
         self.save_character(char)
-        # --- MÉTODOS DE TIENDA ACTIVA DEL DM Y SINTONIZACIÓN (CAPÍTULO 6) ---
+        # --- MÉTODOS DE TIENDA ACTIVA DEL DM Y SINTONIZACIÓN ---
     def ensure_shop_table(self):
         with self.get_connection() as conn:
             cursor = conn.cursor()
@@ -459,7 +459,7 @@ class DatabaseManager:
             conn.commit()
 
 
-            # --- MÉTODOS DE CATÁLOGO DE CONJUROS EXTRAÍDOS DEL PDF (CAPÍTULO 7) ---
+            # --- MÉTODOS DE CATÁLOGO DE CONJUROS EXTRAÍDOS DEL PDF ---
     def ensure_spells_table(self):
         with self.get_connection() as conn:
             cursor = conn.cursor()
