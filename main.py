@@ -52,7 +52,6 @@ class DnD55SuiteApp(ctk.CTk):
         if icon_file.exists():
             self.iconbitmap(str(icon_file))
 
-        # Mostrar tu logo en la parte superior de la barra lateral
         logo_source = png_file if png_file.exists() else (icon_file if icon_file.exists() else None)
         if logo_source:
             pil_logo = Image.open(logo_source)
