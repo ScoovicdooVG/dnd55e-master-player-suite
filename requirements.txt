@@ -1,0 +1,5 @@
+customtkinter>=5.2.2
+PyMuPDF>=1.24.0
+Pillow>=10.4.0
+qrcode>=8.0
+pyinstaller>=6.10.0

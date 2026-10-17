@@ -1,0 +1,15 @@
+# Entornos y caché de Python
+__pycache__/
+*.py[cod]
+venv/
+.env/
+
+# Carpetas de compilación de PyInstaller
+build/
+dist/
+*.spec
+
+# Base de datos local y manuales PDF
+*.pdf
+dnd_data.db
+dnd_data.db-journal
