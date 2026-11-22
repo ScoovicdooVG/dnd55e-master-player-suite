@@ -1,3 +1,6 @@
+import shutil
+from datetime import datetime
+from tkinter import messagebox
 import customtkinter as ctk
 from database.db_manager import DatabaseManager
 from pdf_engine.pdf_engine import PDFEngine
@@ -5,6 +8,14 @@ from ui.main_indexer_ui import PDFIndexerView
 from ui.char_sheet_view import CharacterSheetView
 from ui.dm_tools_view import DMToolsView
 from mobile_server import MobileCompanionServer
+import ctypes
+import sys
+
+if sys.platform == "win32":
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Scoovicdoo.DnD55eSuite.2.0")
+    except Exception:
+        pass
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -36,10 +47,11 @@ class DnD55SuiteApp(ctk.CTk):
         self.nav_bar.grid(row=0, column=0, sticky="nsew")
         self.nav_bar.grid_propagate(False)
 
-        ctk.CTkLabel(
-            self.nav_bar, text="D&D 5.5e\nSUITE", 
+        self.lbl_app_title = ctk.CTkLabel(
+            self.nav_bar, text="D&D 5.5e\nSUITE",
             font=("Segoe UI", 22, "bold"), text_color="#F87171"
-        ).pack(pady=(20, 20), padx=15)
+        )
+        self.lbl_app_title.pack(pady=(20, 10), padx=15)
 
         import sys
         from pathlib import Path
@@ -76,6 +88,19 @@ class DnD55SuiteApp(ctk.CTk):
         )
         self.btn_nav_pdf.pack(fill="x", padx=12, pady=5)
 
+        ctk.CTkLabel(
+            self.nav_bar, text="Edición de Reglas:",
+            font=("Segoe UI", 11, "bold"), text_color="#9CA3AF"
+        ).pack(pady=(12, 2), padx=12, anchor="w")
+
+        self.edition_switch = ctk.CTkSegmentedButton(
+            self.nav_bar,
+            values=["5.5e", "5e"],
+            command=self._on_edition_change
+        )
+        self.edition_switch.set(self.db.get_active_edition())
+        self.edition_switch.pack(fill="x", padx=12, pady=(0, 8))
+
         # --- TARJETA INFERIOR CON CÓDIGO QR PARA CELULARES (iOS / ANDROID) ---
         mobile_card = ctk.CTkFrame(self.nav_bar, fg_color="#1E293B")
         mobile_card.pack(side="bottom", fill="x", padx=10, pady=12)
@@ -105,6 +130,11 @@ class DnD55SuiteApp(ctk.CTk):
             font=("Segoe UI", 11), command=self._sync_from_mobile
         ).pack(fill="x", padx=8, pady=(0, 8))
 
+        ctk.CTkButton(
+            mobile_card, text="Respaldar Base de Datos", height=26, fg_color="#059669",
+            font=("Segoe UI", 11, "bold"), command=self._backup_database
+        ).pack(fill="x", padx=8, pady=(0, 8))
+
         # --- CONTENEDOR DE VISTAS ---
         self.container = ctk.CTkFrame(self, fg_color="transparent")
         self.container.grid(row=0, column=1, sticky="nsew", padx=10, pady=5)
@@ -118,6 +148,22 @@ class DnD55SuiteApp(ctk.CTk):
         }
 
         self.show_view("chars")
+        self._on_edition_change(self.db.get_active_edition())
+
+    def _on_edition_change(self, edition: str):
+        self.db.set_active_edition(edition)
+        if edition == "5e":
+            self.title("D&D 5e (2014) Master & Player Suite")
+            self.lbl_app_title.configure(text="D&D 5e\nSUITE")
+            self.btn_nav_chars.configure(text="Personajes 5e")
+        else:
+            self.title("D&D 5.5e Master & Player Suite")
+            self.lbl_app_title.configure(text="D&D 5.5e\nSUITE")
+            self.btn_nav_chars.configure(text="Personajes 5.5e")
+
+        if hasattr(self, "views"):
+            self.views["chars"].set_edition(edition)
+            self.views["dm"].set_edition(edition)    
 
     def _open_large_qr_modal(self):
         modal = ctk.CTkToplevel(self)
@@ -164,6 +210,21 @@ class DnD55SuiteApp(ctk.CTk):
         self.btn_nav_chars.configure(fg_color="#8B2635" if name == "chars" else "#1F2937")
         self.btn_nav_dm.configure(fg_color="#8B2635" if name == "dm" else "#1F2937")
         self.btn_nav_pdf.configure(fg_color="#8B2635" if name == "pdf" else "#1F2937")
+
+    def _backup_database(self):
+        try:
+            src_path = self.db.db_path
+            if not src_path.exists():
+                messagebox.showwarning("Respaldo", "No se encontró el archivo de base de datos.")
+                return
+            backup_dir = src_path.parent / "backups"
+            backup_dir.mkdir(exist_ok=True)
+            stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            dst_path = backup_dir / f"dnd_data_backup_{stamp}.db"
+            shutil.copy2(src_path, dst_path)
+            messagebox.showinfo("Respaldo Creado", f"Copia de seguridad guardada en:\n{dst_path}")
+        except Exception as err:
+            messagebox.showerror("Error al respaldar", str(err))  
 
 if __name__ == "__main__":
     app = DnD55SuiteApp()

@@ -1,4 +1,11 @@
 import math
+import re
+from models.rules_5e import (
+    RACES_5E, BACKGROUNDS_5E, CLASSES_5E, HALF_CASTER_SLOTS_5E,
+    THIRD_CASTER_SLOTS_5E, SUBCLASS_ALWAYS_PREPARED_5E,
+    ARMORS_CATALOG_5E, WEAPONS_CATALOG_5E, MOUNTS_CAPACITY_LB_5E,
+    FIGHTING_STYLES_5E, ELD_INVOCATIONS_5E
+)
 
 ABILITIES = ["Fuerza", "Destreza", "Constitución", "Inteligencia", "Sabiduría", "Carisma"]
 
@@ -505,6 +512,26 @@ SPECIES_55E = {
             ("Visión en la Oscuridad", "Alcance de 18 m."),
             ("Legado Infernal", "Linaje Abisal, Chtónico o Infernal con trucos y conjuros en niveles 1, 3 y 5."),
             ("Presencia de Otro Mundo", "Conoces el truco Taumaturgia.")
+        ]
+    }
+}
+
+EXTRA_RACES_5E = {
+    "Semielfo": {
+        "speed": "9 m", "size": "Mediano",
+        "traits": [
+            ("Visión en la Oscuridad", "Alcance de 18 m."),
+            ("Linaje Feérico", "Ventaja en salvaciones contra Hechizado y no puedes ser dormido por magia."),
+            ("Versatilidad en Habilidades", "Ganas competencia en dos habilidades a tu elección.")
+        ]
+    },
+    "Semiorco": {
+        "speed": "9 m", "size": "Mediano",
+        "traits": [
+            ("Visión en la Oscuridad", "Alcance de 18 m."),
+            ("Amenazador", "Competencia en Intimidación."),
+            ("Aguante Implacable", "Al caer a 0 PG puedes quedar en 1 PG (1/Descanso Largo)."),
+            ("Ataques Salvajes", "En un crítico cuerpo a cuerpo, tiras un dado de daño del arma adicional.")
         ]
     }
 }
@@ -1105,29 +1132,44 @@ class Character55eRules:
         return XP_THRESHOLDS_55E.get(level + 1, 300)
 
     @staticmethod
-    def get_carrying_capacity_kg(str_score: int, species: str = "") -> float:
-        multiplier = 15.0 if species == "Goliat" else 7.5
-        return round(str_score * multiplier, 1)
+    def get_carrying_capacity(str_score: int, species: str = "", edition: str = "5.5e") -> float:
+        if edition == "5e":
+            return round(str_score * 15.0, 1)
+        if species == "Goliat":
+            return round(str_score * 15.0, 1)
+        return round(str_score * 7.5, 1)
 
     @staticmethod
-    def get_spell_slots_by_level(char_class: str, subclass: str, level: int) -> dict:
-        """Devuelve un diccionario {nivel_conjuro: cantidad_espacios} exacto según clase y nivel 5.5e."""
-        stype = CLASSES_55E.get(char_class, {}).get("spellcasting", "none")
+    def get_spell_slots_by_level(char_class: str, subclass: str, level: int, edition: str = "5.5e") -> dict:
+        classes_cat = Character55eRules.get_classes_catalog(edition)
+        stype = classes_cat.get(char_class, {}).get("spellcasting", "none")
         if stype == "full":
             return dict(FULL_CASTER_SLOTS_55E.get(level, {}))
         if stype == "half":
+            if edition == "5e":
+                return dict(HALF_CASTER_SLOTS_5E.get(level, {}))
             return dict(HALF_CASTER_SLOTS_55E.get(level, {}))
         if stype == "pact":
             cnt, slvl = WARLOCK_PACT_SLOTS_55E.get(level, (1, 1))
             return {slvl: cnt}
         if ("Caballero Arcano" in subclass or "Bribón Arcano" in subclass or "Embaucador" in subclass) and level >= 3:
+            if edition == "5e":
+                return dict(THIRD_CASTER_SLOTS_5E.get(level, {}))
             eff_lvl = max(1, math.ceil(level / 3))
             return dict(FULL_CASTER_SLOTS_55E.get(eff_lvl, {1: 2}))
         return {}
 
     @staticmethod
-    def get_always_prepared_spells(char_class: str, subclass: str, level: int) -> list:
-        """Devuelve todos los conjuros que la clase o subclase otorga siempre preparados hasta el nivel actual."""
+    def get_always_prepared_spells(char_class: str, subclass: str, level: int, edition: str = "5.5e") -> list:
+        if edition == "5e":
+            auto_spells = []
+            sub_table = SUBCLASS_ALWAYS_PREPARED_5E.get(subclass, {})
+            for req_lvl, sp_list in sorted(sub_table.items()):
+                if level >= req_lvl:
+                    for s in sp_list:
+                        if s not in auto_spells:
+                            auto_spells.append(s)
+            return auto_spells
         auto_spells = []
         if char_class == "Druida" and level >= 1:
             auto_spells.append("Hablar con los animales (Druídico)")
@@ -1141,7 +1183,6 @@ class Character55eRules:
             auto_spells.append("Contactar con otro plano (Brujo Niv. 9)")
         if char_class == "Bardo" and level >= 20:
             auto_spells.extend(["Palabra de poder: sanar", "Palabra de poder: matar"])
-
         sub_table = SUBCLASS_ALWAYS_PREPARED_55E.get(subclass, {})
         for req_lvl, sp_list in sorted(sub_table.items()):
             if level >= req_lvl:
@@ -1151,7 +1192,13 @@ class Character55eRules:
         return auto_spells
 
     @staticmethod
-    def get_asi_levels(char_class: str) -> list:
+    def get_asi_levels(char_class: str, edition: str = "5.5e") -> list:
+        if edition == "5e":
+            if char_class == "Guerrero":
+                return [4, 6, 8, 12, 14, 16, 19]
+            if char_class == "Pícaro":
+                return [4, 8, 10, 12, 16, 19]
+            return [4, 8, 12, 16, 19]
         if char_class == "Guerrero":
             return [4, 6, 8, 12, 14, 16]
         if char_class == "Pícaro":
@@ -1208,29 +1255,48 @@ class Character55eRules:
         return count
 
     @staticmethod
-    def get_prepared_spells_max(char_class: str, level: int) -> int:
+    def get_prepared_spells_max(char_class: str, level: int, edition: str = "5.5e", spell_mod: int = 0) -> int:
+        if edition == "5e":
+            c_data = CLASSES_5E.get(char_class, {})
+            formula = c_data.get("prepared_formula")
+            if formula == "level_plus_mod":
+                return max(1, level + spell_mod)
+            if formula == "half_level_plus_mod":
+                if level < 2:
+                    return 0
+                return max(1, (level // 2) + spell_mod)
+            return c_data.get("known_by_level", {}).get(level, 0)
         c_data = CLASSES_55E.get(char_class, {})
-        prog = c_data.get("prepared_by_level", {})
-        return prog.get(level, 0)
+        return c_data.get("prepared_by_level", {}).get(level, 0)
 
     @staticmethod
-    def get_max_spell_level(char_class: str, level: int) -> int:
-        stype = CLASSES_55E.get(char_class, {}).get("spellcasting", "none")
+    def get_max_spell_level(char_class: str, level: int, edition: str = "5.5e") -> int:
+        classes_cat = Character55eRules.get_classes_catalog(edition)
+        stype = classes_cat.get(char_class, {}).get("spellcasting", "none")
         if stype == "none":
             return 0
         if stype == "full":
             return min(9, math.ceil(level / 2))
         if stype == "half":
+            if edition == "5e" and level < 2:
+                return 0
             return min(5, math.ceil(level / 4))
         if stype == "pact":
             return WARLOCK_PACT_SLOTS_55E.get(level, (1, 1))[1]
         return 0
 
     @staticmethod
-    def calculate_max_hp(char_class: str, level: int, con_mod: int, origin_feat: str, species: str) -> int:
-        hd = CLASSES_55E.get(char_class, {}).get("hit_die", 8)
+    def calculate_max_hp(char_class: str, level: int, con_mod: int, origin_feat: str, species: str, edition: str = "5.5e", subrace: str = "", subclass: str = "") -> int:
+        classes_cat = Character55eRules.get_classes_catalog(edition)
+        hd = classes_cat.get(char_class, {}).get("hit_die", 8)
         avg_per_lvl = (hd // 2) + 1
         base_hp = hd + con_mod + ((level - 1) * (avg_per_lvl + con_mod))
+        if edition == "5e":
+            if species == "Enano" and "Colinas" in subrace:
+                base_hp += level
+            if char_class == "Hechicero" and "Dracónico" in subclass:
+                base_hp += level
+            return max(1, base_hp)
         if "Duro" in origin_feat or "Tough" in origin_feat:
             base_hp += 2 * level
         if species == "Enano":
@@ -1238,18 +1304,80 @@ class Character55eRules:
         return max(1, base_hp)
 
     @staticmethod
-    def get_features_up_to_level(species: str, char_class: str, subclass: str, level: int) -> list:
+    def convert_metric_text_to_feet(text: str) -> str:
+        if not text:
+            return text
+
+        def replace_range(match):
+            n1 = float(match.group(1).replace(",", "."))
+            n2 = float(match.group(2).replace(",", "."))
+            f1 = int(round((n1 / 1.5) * 5))
+            f2 = int(round((n2 / 1.5) * 5))
+            return f"{f1}/{f2} pies"
+
+        def replace_single(match):
+            n = float(match.group(1).replace(",", "."))
+            f = int(round((n / 1.5) * 5))
+            return f"{f} pies"
+
+        result = re.sub(r"(\d+(?:[.,]\d+)?)/(\d+(?:[.,]\d+)?)\s*m\b", replace_range, text)
+        result = re.sub(r"(\d+(?:[.,]\d+)?)\s*m\b", replace_single, result)
+        return result
+
+    @staticmethod
+    def convert_feet_text_to_metric(text: str) -> str:
+        if not text:
+            return text
+
+        def format_m(val: float) -> str:
+            if val.is_integer():
+                return str(int(val))
+            return str(round(val, 1)).replace(".", ",")
+
+        def replace_range(match):
+            f1 = float(match.group(1))
+            f2 = float(match.group(2))
+            m1 = format_m((f1 / 5.0) * 1.5)
+            m2 = format_m((f2 / 5.0) * 1.5)
+            return f"{m1}/{m2} m"
+
+        def replace_single(match):
+            f = float(match.group(1))
+            m = format_m((f / 5.0) * 1.5)
+            return f"{m} m"
+
+        result = re.sub(r"(\d+)/(\d+)\s*pies\b", replace_range, text)
+        result = re.sub(r"(\d+)\s*pies\b", replace_single, result)
+        return result
+
+    @staticmethod
+    def format_distance_for_edition(text: str, edition: str = "5.5e") -> str:
+        if edition == "5e":
+            return Character55eRules.convert_metric_text_to_feet(text)
+        return Character55eRules.convert_feet_text_to_metric(text)
+
+    @staticmethod
+    def get_features_up_to_level(species: str, char_class: str, subclass: str, level: int, edition: str = "5.5e", subrace: str = "") -> list:
         compiled = []
-        sp_traits = SPECIES_55E.get(species, {}).get("traits", [])
-        if isinstance(sp_traits, list):
-            for t_name, t_desc in sp_traits:
-                if "Niv. 3" in t_name and level < 3:
-                    continue
-                if "Niv. 5" in t_name and level < 5:
-                    continue
+        species_cat = Character55eRules.get_species_catalog(edition)
+        sp_data = species_cat.get(species, {})
+        for t_name, t_desc in sp_data.get("traits", []):
+            if "Niv. 3" in t_name and level < 3:
+                continue
+            if "Niv. 5" in t_name and level < 5:
+                continue
+            if edition == "5e":
+                compiled.append((f"[Raza: {species}] {t_name}", t_desc))
+            else:
                 compiled.append((f"[Especie: {species}] {t_name}", t_desc))
 
-        c_info = CLASSES_55E.get(char_class, {})
+        if edition == "5e" and subrace:
+            sub_data = sp_data.get("subraces", {}).get(subrace, {})
+            for st_name, st_desc in sub_data.get("traits", []):
+                compiled.append((f"[Subraza: {subrace}] {st_name}", st_desc))
+
+        classes_cat = Character55eRules.get_classes_catalog(edition)
+        c_info = classes_cat.get(char_class, {})
         feat_by_lvl = c_info.get("features_by_level", {})
         sub_feats = c_info.get("subclass_features", {}).get(subclass, {})
 
@@ -1260,6 +1388,7 @@ class Character55eRules:
                 compiled.append((f"[Niv. {lvl} - {subclass}] {sf_name}", sf_desc))
 
         return compiled
+    
 
     @staticmethod
     def default_stats_payload() -> dict:
@@ -1301,3 +1430,123 @@ class Character55eRules:
             "inventory_mount": [],
             "adventure_notes": ""
         }
+
+    @staticmethod
+    def get_species_catalog(edition: str = "5.5e") -> dict:
+        if edition == "5e":
+            return RACES_5E
+        return SPECIES_55E
+
+    @staticmethod
+    def get_subclass_unlock_level(char_class: str, edition: str = "5.5e") -> int:
+        if edition == "5e":
+            return CLASSES_5E.get(char_class, {}).get("subclass_level", 3)
+        return 3
+
+    @staticmethod
+    def get_long_rest_hit_dice(level: int, current_hd: int, edition: str = "5.5e") -> int:
+        if edition == "5e":
+            recovered = max(1, level // 2)
+            return min(level, current_hd + recovered)
+        return level
+
+    @staticmethod
+    def get_backgrounds_catalog(edition: str = "5.5e") -> dict:
+        if edition == "5e":
+            return BACKGROUNDS_5E
+        return BACKGROUNDS_55E
+
+    @staticmethod
+    def get_classes_catalog(edition: str = "5.5e") -> dict:
+        if edition == "5e":
+            return CLASSES_5E
+        return CLASSES_55E   
+
+    @staticmethod
+    def get_armors_catalog(edition: str = "5.5e") -> dict:
+        if edition == "5e":
+            return ARMORS_CATALOG_5E
+        return ARMORS_CATALOG_55E
+
+    @staticmethod
+    def get_weapons_catalog(edition: str = "5.5e") -> dict:
+        if edition == "5e":
+            return WEAPONS_CATALOG_5E
+        return WEAPONS_CATALOG_55E 
+
+    @staticmethod
+    def get_mounts_catalog(edition: str = "5.5e") -> dict:
+        if edition == "5e":
+            return MOUNTS_CAPACITY_LB_5E
+        return MOUNTS_CAPACITY_KG
+
+    @staticmethod
+    def convert_metric_desc_to_5e(text: str) -> str:
+        if not text:
+            return text
+        converted = Character55eRules.convert_metric_text_to_feet(text)
+
+        def replace_kg(match):
+            val = float(match.group(1).replace(",", "."))
+            lb = round(val * 2.0, 1)
+            if lb.is_integer():
+                return f"{int(lb)} lb"
+            return f"{lb} lb"
+
+        converted = re.sub(r"(\d+(?:[.,]\d+)?)\s*kg\b", replace_kg, converted)
+        return converted
+
+    @staticmethod
+    def get_items_catalog_by_category(edition: str = "5.5e") -> dict:
+        if edition != "5e":
+            return ITEMS_CATALOG_BY_CATEGORY
+
+        catalog_5e = {}
+        for cat_name, items in ITEMS_CATALOG_BY_CATEGORY.items():
+            if cat_name == "Armas (Capítulo 6)":
+                weapons_list = []
+                for w_name, w_data in WEAPONS_CATALOG_5E.items():
+                    if w_name == "-- Seleccionar Arma --":
+                        continue
+                    weapons_list.append({
+                        "name": w_name,
+                        "weight_kg": round(w_data["weight_lb"] / 2.0, 3),
+                        "weight_lb": w_data["weight_lb"],
+                        "price": w_data["price"],
+                        "is_container": False,
+                        "desc": w_data["damage"]
+                    })
+                catalog_5e["Armas (Capítulo 5)"] = weapons_list
+            elif cat_name == "Armaduras y Escudos (Capítulo 6)":
+                armors_list = [
+                    {
+                        "name": "Escudo (+2 CA)",
+                        "weight_kg": 3.0,
+                        "weight_lb": 6.0,
+                        "price": "10 po",
+                        "is_container": False,
+                        "desc": "+2 a la Clase de Armadura."
+                    }
+                ]
+                for a_name, a_data in ARMORS_CATALOG_5E.items():
+                    if a_data["weight_lb"] > 0:
+                        armors_list.append({
+                            "name": a_name.split(" (")[0],
+                            "weight_kg": round(a_data["weight_lb"] / 2.0, 3),
+                            "weight_lb": a_data["weight_lb"],
+                            "price": a_data["price"],
+                            "is_container": False,
+                            "desc": a_name
+                        })
+                catalog_5e["Armaduras y Escudos (Capítulo 5)"] = armors_list
+            else:
+                new_cat_name = cat_name.replace("Capítulo 6", "Capítulo 5").replace("Pág. 230", "Pág. 157")
+                converted_items = []
+                for it in items:
+                    copy_it = dict(it)
+                    copy_it["weight_lb"] = round(float(it.get("weight_kg", 0.0)) * 2.0, 2)
+                    copy_it["desc"] = Character55eRules.convert_metric_desc_to_5e(it.get("desc", ""))
+                    converted_items.append(copy_it)
+                catalog_5e[new_cat_name] = converted_items
+
+        return catalog_5e

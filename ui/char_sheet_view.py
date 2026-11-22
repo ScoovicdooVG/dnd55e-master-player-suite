@@ -1,7 +1,13 @@
+import base64
+import io
+import os
+from PIL import Image
+from pdf_engine.sheet_pdf_exporter import CharacterSheetPDFExporter
 import json
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 from database.db_manager import DatabaseManager
+from models.rules_5e import FIGHTING_STYLES_5E, ELD_INVOCATIONS_5E
 from models.character_55e import (
     Character55eRules, SPECIES_55E, BACKGROUNDS_55E, CLASSES_55E,
     WEAPON_MASTERIES_55E, ABILITIES, SKILLS_55E, LANGUAGES_55E,
@@ -13,14 +19,18 @@ from models.character_55e import (
 )
 
 class ItemCatalogModal(ctk.CTkToplevel):
-    """Buscador y Catálogo Completo del Capítulo 6 (Equipo.pdf) con auto-desempaquetado de Paquetes."""
     def __init__(self, parent_view, default_target="char", container_idx=None):
         super().__init__(parent_view)
         self.parent_view = parent_view
+        self.edition = parent_view.edition
         self.default_target = default_target
         self.container_idx = container_idx
+        self.catalog_data = Character55eRules.get_items_catalog_by_category(self.edition)
 
-        self.title("Catálogo Oficial Capítulo 6: Equipo (D&D 5.5e)")
+        if self.edition == "5e":
+            self.title("Catálogo Oficial Capítulo 5: Equipo (D&D 5e)")
+        else:
+            self.title("Catálogo Oficial Capítulo 6: Equipo (D&D 5.5e)")
         self.geometry("760x680")
         self.grab_set()
 
@@ -33,7 +43,13 @@ class ItemCatalogModal(ctk.CTkToplevel):
 
         header = ctk.CTkFrame(self, fg_color="#1E293B", corner_radius=0)
         header.grid(row=0, column=0, sticky="ew")
-        ctk.CTkLabel(header, text="Catálogo Oficial de Equipo (Capítulo 6)", font=("Segoe UI", 16, "bold")).pack(
+
+        if self.edition == "5e":
+            header_title = "Catálogo Oficial de Equipo (Capítulo 5 - 5e)"
+        else:
+            header_title = "Catálogo Oficial de Equipo (Capítulo 6 - 5.5e)"
+
+        ctk.CTkLabel(header, text=header_title, font=("Segoe UI", 16, "bold")).pack(
             side="left", padx=15, pady=10
         )
 
@@ -46,7 +62,11 @@ class ItemCatalogModal(ctk.CTkToplevel):
         self.combo_dest.pack(side="left", padx=4)
 
         if self.container_idx is not None:
-            prefix = f"[Contenedor {'PJ' if self.default_target == 'char' else 'Montura'} #{self.container_idx + 1}]"
+            if self.default_target == "char":
+                target_lbl = "PJ"
+            else:
+                target_lbl = "Montura"
+            prefix = f"[Contenedor {target_lbl} #{self.container_idx + 1}]"
             for k in self.dest_options:
                 if k.startswith(prefix):
                     self.combo_dest.set(k)
@@ -60,11 +80,11 @@ class ItemCatalogModal(ctk.CTkToplevel):
         filter_bar.grid(row=1, column=0, sticky="ew", padx=12, pady=8)
         filter_bar.grid_columnconfigure(0, weight=1)
 
-        self.entry_search = ctk.CTkEntry(filter_bar, placeholder_text="Buscar cualquier objeto del manual (ej. Paquete, Aljaba, Ácido, Mosquete, Herramientas)...")
+        self.entry_search = ctk.CTkEntry(filter_bar, placeholder_text="Buscar cualquier objeto del manual (ej. Paquete, Aljaba, Ácido, Herramientas)...")
         self.entry_search.grid(row=0, column=0, padx=6, pady=6, sticky="ew")
         self.entry_search.bind("<KeyRelease>", lambda e: self._render_catalog())
 
-        categories = ["Todas las Categorías"] + list(ITEMS_CATALOG_BY_CATEGORY.keys())
+        categories = ["Todas las Categorías"] + list(self.catalog_data.keys())
         self.combo_cat = ctk.CTkComboBox(filter_bar, values=categories, width=230, command=lambda _: self._render_catalog())
         self.combo_cat.set("Todas las Categorías")
         self.combo_cat.grid(row=0, column=1, padx=6, pady=6)
@@ -101,14 +121,14 @@ class ItemCatalogModal(ctk.CTkToplevel):
         query = self.entry_search.get().strip().lower()
         selected_cat = self.combo_cat.get()
 
-        for cat_name, items in ITEMS_CATALOG_BY_CATEGORY.items():
+        for cat_name, items in self.catalog_data.items():
             if selected_cat != "Todas las Categorías" and selected_cat != cat_name:
                 continue
 
-            filtered = [
-                it for it in items
-                if not query or query in it["name"].lower() or query in it.get("desc", "").lower()
-            ]
+            filtered = []
+            for it in items:
+                if not query or query in it["name"].lower() or query in it.get("desc", "").lower():
+                    filtered.append(it)
             if not filtered:
                 continue
 
@@ -125,10 +145,25 @@ class ItemCatalogModal(ctk.CTkToplevel):
                 top = ctk.CTkFrame(card, fg_color="transparent")
                 top.pack(fill="x", padx=8, pady=(4, 1))
 
-                price_str = f" | {item_tpl.get('price', '')}" if item_tpl.get("price") else ""
-                tag = " [Contenedor]" if item_tpl.get("is_container") else (" [Paquete Auto-Desplegable]" if item_tpl.get("is_pack") else "")
+                if item_tpl.get("price"):
+                    price_str = f" | {item_tpl.get('price', '')}"
+                else:
+                    price_str = ""
+
+                if item_tpl.get("is_container"):
+                    tag = " [Contenedor]"
+                elif item_tpl.get("is_pack"):
+                    tag = " [Paquete Auto-Desplegable]"
+                else:
+                    tag = ""
+
+                if self.edition == "5e":
+                    weight_str = f"{item_tpl.get('weight_lb', round(item_tpl['weight_kg'] * 2.0, 2))} lb"
+                else:
+                    weight_str = f"{item_tpl['weight_kg']} kg"
+
                 ctk.CTkLabel(
-                    top, text=f"{item_tpl['name']}{tag} — {item_tpl['weight_kg']} kg{price_str}",
+                    top, text=f"{item_tpl['name']}{tag} — {weight_str}{price_str}",
                     font=("Segoe UI", 12, "bold"), text_color="#F3F4F6"
                 ).pack(side="left")
 
@@ -151,10 +186,12 @@ class ItemCatalogModal(ctk.CTkToplevel):
 
         dest_key = self.combo_dest.get()
         target_list_type, cont_idx = self.dest_options.get(dest_key, ("char", None))
-        inv_key = "inventory_char" if target_list_type == "char" else "inventory_mount"
+        if target_list_type == "char":
+            inv_key = "inventory_char"
+        else:
+            inv_key = "inventory_mount"
         inv_list = self.parent_view.builder_state.setdefault(inv_key, [])
 
-        # Si es uno de los 7 Paquetes Oficiales del manual, crear su Mochila/Cofre con todos los objetos adentro
         if tpl.get("is_pack") and tpl["name"] in PACK_CONTENTS_55E:
             pack_info = PACK_CONTENTS_55E[tpl["name"]]
             cont_info = pack_info["container"]
@@ -196,34 +233,36 @@ class ItemCatalogModal(ctk.CTkToplevel):
 
 
 class ShardOptionsDialog(ctk.CTkToplevel):
-    """
-    Constructor Progresivo Estilo Shard Tabletop (Niveles 1 a N):
-    - Si el personaje es Nivel 1, muestra únicamente las opciones de Nivel 1 (Origen, Especie y Clase Niv 1).
-    - Si sube de nivel o se crea en un nivel superior (ej. Nivel 8), genera acumulativamente
-      todas las decisiones rellenables de cada nivel desde 1 hasta su nivel actual.
-    """
     def __init__(self, parent_view):
         super().__init__(parent_view)
         self.parent_view = parent_view
+        self.edition = parent_view.edition
         self.char_class = self.parent_view.combo_class.get()
         self.species = self.parent_view.combo_species.get()
         self.bg_name = self.parent_view.combo_bg.get()
         self.level = int(self.parent_view.combo_level.get() or 1)
 
-        self.title(f"Opciones de Personaje (Estilo Shard 5.5e) — Niveles 1 a {self.level}")
+        self.title(f"Opciones de Personaje (Estilo Shard {self.edition}) — Niveles 1 a {self.level}")
         self.geometry("680x780")
         self.grab_set()
 
-        self.class_info = CLASSES_55E.get(self.char_class, CLASSES_55E["Bardo"])
-        self.bg_info = BACKGROUNDS_55E.get(self.bg_name, BACKGROUNDS_55E["Noble"])
+        classes_cat = Character55eRules.get_classes_catalog(self.edition)
+        bg_cat = Character55eRules.get_backgrounds_catalog(self.edition)
+        species_cat = Character55eRules.get_species_catalog(self.edition)
+
+        self.class_info = classes_cat.get(self.char_class, classes_cat["Guerrero"])
+        self.bg_info = bg_cat.get(self.bg_name, list(bg_cat.values())[0])
+        self.species_info = species_cat.get(self.species, list(species_cat.values())[0])
 
         self.skill_combos = []
         self.inst_combos = []
         self.lang_combos = []
         self.bg_abil_combos = []
+        self.racial_extra_abil_combos = []
+        self.racial_extra_skill_combos = []
         self.skilled_combos = []
         self.base_score_entries = {}
-        self.prog_widgets = {}  # Guarda todas las elecciones de Nivel 1 a N
+        self.prog_widgets = {}
 
         self._build_ui()
 
@@ -236,12 +275,20 @@ class ShardOptionsDialog(ctk.CTkToplevel):
 
         con_score = int(self.parent_view.score_vars["Constitución"].get() or 10)
         con_mod = Character55eRules.get_modifier(con_score)
+        saved_subrace = self.parent_view.builder_state.get("species_lineage", "")
+        curr_subclass = self.parent_view.combo_subclass.get()
+        if self.edition == "5e":
+            feat_for_hp = ""
+        else:
+            feat_for_hp = self.bg_info.get("feat", "")
+
         calc_hp = Character55eRules.calculate_max_hp(
-            self.char_class, self.level, con_mod, self.bg_info["feat"], self.species
+            self.char_class, self.level, con_mod, feat_for_hp,
+            self.species, self.edition, saved_subrace, curr_subclass
         )
 
         ctk.CTkLabel(
-            top_bar, text=f"Progresión Acumulada — {self.char_class} (Nivel 1 al {self.level})",
+            top_bar, text=f"Progresión Acumulada ({self.edition}) — {self.char_class} (Nivel 1 al {self.level})",
             font=("Segoe UI", 16, "bold")
         ).pack(side="left", padx=15, pady=12)
 
@@ -255,22 +302,29 @@ class ShardOptionsDialog(ctk.CTkToplevel):
 
         saved_prog = self.parent_view.builder_state.get("level_progression_choices", {})
         all_skills_pool = ["Ninguna"] + [sk[0] for sk in SKILLS_55E]
+        unlock_lvl = Character55eRules.get_subclass_unlock_level(self.char_class, self.edition)
 
-        # =====================================================================
-        # BLOQUE A: PUNTUACIONES BASE Y ORIGEN (NIVEL 1: ESPECIE + TRASFONDO)
-        # =====================================================================
+        if self.edition == "5e":
+            fighting_styles_pool = FIGHTING_STYLES_5E
+            invocations_pool = ELD_INVOCATIONS_5E
+            origin_subtitle = "NIVEL 1 — Puntuaciones Base (Antes de Bonos Raciales y Mejoras)"
+        else:
+            fighting_styles_pool = FIGHTING_STYLES_55E
+            invocations_pool = ELD_INVOCATIONS_55E
+            origin_subtitle = "NIVEL 1 — Puntuaciones Base (Antes de Trasfondo y Mejoras)"
+
         origin_box = ctk.CTkFrame(self.scroll, fg_color="#1E293B")
         origin_box.pack(fill="x", padx=6, pady=6)
 
         ctk.CTkLabel(
-            origin_box, text="NIVEL 1 — Puntuaciones Base (Antes de Trasfondo y Mejoras)",
+            origin_box, text=origin_subtitle,
             font=("Segoe UI", 14, "bold"), text_color="#FBBF24"
         ).pack(anchor="w", padx=12, pady=(10, 4))
 
         scores_row = ctk.CTkFrame(origin_box, fg_color="transparent")
         scores_row.pack(fill="x", padx=12, pady=4)
         saved_base = self.parent_view.builder_state.get("base_scores", {})
-        for idx, ab in enumerate(ABILITIES):
+        for ab in ABILITIES:
             col = ctk.CTkFrame(scores_row, fg_color="transparent")
             col.pack(side="left", expand=True, padx=2)
             ctk.CTkLabel(col, text=ab[:3].upper(), font=("Segoe UI", 11, "bold")).pack()
@@ -285,80 +339,141 @@ class ShardOptionsDialog(ctk.CTkToplevel):
             height=24, fg_color="#374151", command=self._apply_standard_array
         ).pack(padx=12, pady=(2, 8), fill="x")
 
-        # Opciones de Especie (Idiomas + Linaje de Especie)
         sp_box = ctk.CTkFrame(self.scroll)
         sp_box.pack(fill="x", padx=6, pady=6)
-        ctk.CTkLabel(
-            sp_box, text=f"NIVEL 1 — Opciones de Especie: {self.species}",
-            font=("Segoe UI", 14, "bold"), text_color="#60A5FA"
-        ).pack(anchor="w", padx=12, pady=(10, 4))
 
-        if self.species in SPECIES_LINEAGES_55E:
-            lin_opts = ["Ninguno"] + SPECIES_LINEAGES_55E[self.species]
-            saved_lin = self.parent_view.builder_state.get("species_lineage", "Ninguno")
-            self.prog_widgets["species_lineage"] = self._create_alert_dropdown(
-                sp_box, f"Linaje / Ancestría de {self.species}", lin_opts, saved_lin
-            )
+        if self.edition == "5e":
+            ctk.CTkLabel(
+                sp_box, text=f"NIVEL 1 — Opciones de Raza (5e): {self.species}",
+                font=("Segoe UI", 14, "bold"), text_color="#60A5FA"
+            ).pack(anchor="w", padx=12, pady=(10, 4))
 
-        if self.species == "Humano":
-            saved_h_sk = self.parent_view.builder_state.get("human_extra_skill", "Ninguna")
-            self.prog_widgets["human_extra_skill"] = self._create_alert_dropdown(
-                sp_box, "Rasgo Humano Habilidoso (1 Habilidad extra)", all_skills_pool, saved_h_sk
-            )
+            base_bonuses = self.species_info.get("ability_bonuses", {})
+            if base_bonuses:
+                b_txt = ", ".join([f"{k} +{v}" for k, v in base_bonuses.items()])
+                ctk.CTkLabel(
+                    sp_box, text=f"Bonos Raciales Base: {b_txt}",
+                    font=("Segoe UI", 11), text_color="#34D399"
+                ).pack(anchor="w", padx=12, pady=(0, 4))
+
+            subraces_dict = self.species_info.get("subraces", {})
+            if subraces_dict:
+                sub_opts = ["Ninguno"] + list(subraces_dict.keys())
+                saved_lin = self.parent_view.builder_state.get("species_lineage", "Ninguno")
+                self.prog_widgets["species_lineage"] = self._create_alert_dropdown(
+                    sp_box, f"Subraza / Linaje de {self.species}", sub_opts, saved_lin
+                )
+
+            if self.species in ("Semielfo", "Humano"):
+                saved_r_ab = self.parent_view.builder_state.get("racial_extra_abilities", ["Ninguno", "Ninguno"])
+                for i in range(2):
+                    if i < len(saved_r_ab):
+                        val = saved_r_ab[i]
+                    else:
+                        val = "Ninguno"
+                    cb = self._create_alert_dropdown(
+                        sp_box, f"Bono Racial +1 a Elección #{i+1} (Semielfo / Humano Alt.)",
+                        ["Ninguno"] + ABILITIES, val
+                    )
+                    self.racial_extra_abil_combos.append(cb)
+
+                if self.species == "Semielfo":
+                    extra_sk_count = 2
+                else:
+                    extra_sk_count = 1
+                saved_r_sk = self.parent_view.builder_state.get("racial_extra_skills", [])
+                for i in range(extra_sk_count):
+                    if i < len(saved_r_sk):
+                        val = saved_r_sk[i]
+                    else:
+                        val = "Ninguna"
+                    cb = self._create_alert_dropdown(
+                        sp_box, f"Habilidad Racial Adicional #{i+1}", all_skills_pool, val
+                    )
+                    self.racial_extra_skill_combos.append(cb)
+        else:
+            ctk.CTkLabel(
+                sp_box, text=f"NIVEL 1 — Opciones de Especie: {self.species}",
+                font=("Segoe UI", 14, "bold"), text_color="#60A5FA"
+            ).pack(anchor="w", padx=12, pady=(10, 4))
+
+            if self.species in SPECIES_LINEAGES_55E:
+                lin_opts = ["Ninguno"] + SPECIES_LINEAGES_55E[self.species]
+                saved_lin = self.parent_view.builder_state.get("species_lineage", "Ninguno")
+                self.prog_widgets["species_lineage"] = self._create_alert_dropdown(
+                    sp_box, f"Linaje / Ancestría de {self.species}", lin_opts, saved_lin
+                )
+
+            if self.species == "Humano":
+                saved_h_sk = self.parent_view.builder_state.get("human_extra_skill", "Ninguna")
+                self.prog_widgets["human_extra_skill"] = self._create_alert_dropdown(
+                    sp_box, "Rasgo Humano Habilidoso (1 Habilidad extra)", all_skills_pool, saved_h_sk
+                )
 
         saved_langs = self.parent_view.builder_state.get("language_choices", ["Común", "Ninguno", "Ninguno"])
         for i in range(2):
-            val = saved_langs[i+1] if (i+1) < len(saved_langs) else "Ninguno"
-            cb = self._create_alert_dropdown(sp_box, f"Idioma Estándar Adicional #{i+1} (Cap. 2)", ["Ninguno"] + LANGUAGES_55E, val)
+            if (i + 1) < len(saved_langs):
+                val = saved_langs[i + 1]
+            else:
+                val = "Ninguno"
+            cb = self._create_alert_dropdown(sp_box, f"Idioma Adicional #{i+1}", ["Ninguno"] + LANGUAGES_55E, val)
             self.lang_combos.append(cb)
 
-        # Opciones de Trasfondo
         bg_box = ctk.CTkFrame(self.scroll)
         bg_box.pack(fill="x", padx=6, pady=6)
         ctk.CTkLabel(
             bg_box, text=f"NIVEL 1 — Opciones de Trasfondo: {self.bg_name}",
             font=("Segoe UI", 14, "bold"), text_color="#60A5FA"
         ).pack(anchor="w", padx=12, pady=(10, 2))
-        ctk.CTkLabel(
-            bg_box, text=f"Habilidades fijas: {', '.join(self.bg_info['skills'])} | Dote de Origen: {self.bg_info['feat']}",
-            font=("Segoe UI", 11), text_color="#9CA3AF"
-        ).pack(anchor="w", padx=12, pady=(0, 6))
 
-        self.allow_all_abil_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(
-            bg_box, text="Permitir selección de cualquier característica",
-            variable=self.allow_all_abil_var, command=self._refresh_bg_ability_pools
-        ).pack(anchor="w", padx=12, pady=4)
-
-        saved_bg_bonuses = self.parent_view.builder_state.get("bg_bonuses", {})
-        allowed_abils = ["Ninguno"] + self.bg_info["abilities"]
-        for idx, key in enumerate(["+1_a", "+1_b", "+1_c"]):
-            val = saved_bg_bonuses.get(key, "Ninguno")
-            cb = self._create_alert_dropdown(bg_box, f"Aumento de Característica de Trasfondo +1 (#{idx+1})", allowed_abils, val)
-            self.bg_abil_combos.append(cb)
-
-        if "Habilidoso" in self.bg_info["feat"] or self.species == "Humano":
+        if self.edition == "5e":
             ctk.CTkLabel(
-                bg_box, text="Dote de Origen: Habilidoso (Skilled) — Elige 3 habilidades",
-                font=("Segoe UI", 12, "bold"), text_color="#34D399"
-            ).pack(anchor="w", padx=12, pady=(8, 2))
-            saved_skilled = self.parent_view.builder_state.get("skilled_feat_choices", [])
-            for i in range(3):
-                val = saved_skilled[i] if i < len(saved_skilled) else "Ninguna"
-                cb = self._create_alert_dropdown(bg_box, f"Elección de Habilidoso #{i+1}", all_skills_pool, val)
-                self.skilled_combos.append(cb)
-
-        if "Juego" in self.bg_info.get("tool", ""):
-            self.gaming_combo = self._create_alert_dropdown(
-                bg_box, "Competencia en Juego (Trasfondo)", ["Ninguno"] + GAMING_SETS,
-                self.parent_view.builder_state.get("gaming_set_choice", "Dados")
-            )
-        else:
+                bg_box,
+                text=f"Habilidades fijas: {', '.join(self.bg_info['skills'])}\nRasgo: {self.bg_info.get('feature', '')}",
+                font=("Segoe UI", 11), text_color="#9CA3AF", justify="left", wraplength=600
+            ).pack(anchor="w", padx=12, pady=(0, 8))
             self.gaming_combo = None
+        else:
+            ctk.CTkLabel(
+                bg_box, text=f"Habilidades fijas: {', '.join(self.bg_info['skills'])} | Dote de Origen: {self.bg_info['feat']}",
+                font=("Segoe UI", 11), text_color="#9CA3AF"
+            ).pack(anchor="w", padx=12, pady=(0, 6))
 
-        # =====================================================================
-        # BLOQUE B: OPCIONES DE CLASE NIVEL 1
-        # =====================================================================
+            self.allow_all_abil_var = ctk.BooleanVar(value=False)
+            ctk.CTkCheckBox(
+                bg_box, text="Permitir selección de cualquier característica",
+                variable=self.allow_all_abil_var, command=self._refresh_bg_ability_pools
+            ).pack(anchor="w", padx=12, pady=4)
+
+            saved_bg_bonuses = self.parent_view.builder_state.get("bg_bonuses", {})
+            allowed_abils = ["Ninguno"] + self.bg_info["abilities"]
+            for idx, key in enumerate(["+1_a", "+1_b", "+1_c"]):
+                val = saved_bg_bonuses.get(key, "Ninguno")
+                cb = self._create_alert_dropdown(bg_box, f"Aumento de Característica de Trasfondo +1 (#{idx+1})", allowed_abils, val)
+                self.bg_abil_combos.append(cb)
+
+            if "Habilidoso" in self.bg_info["feat"] or self.species == "Humano":
+                ctk.CTkLabel(
+                    bg_box, text="Dote de Origen: Habilidoso (Skilled) — Elige 3 habilidades",
+                    font=("Segoe UI", 12, "bold"), text_color="#34D399"
+                ).pack(anchor="w", padx=12, pady=(8, 2))
+                saved_skilled = self.parent_view.builder_state.get("skilled_feat_choices", [])
+                for i in range(3):
+                    if i < len(saved_skilled):
+                        val = saved_skilled[i]
+                    else:
+                        val = "Ninguna"
+                    cb = self._create_alert_dropdown(bg_box, f"Elección de Habilidoso #{i+1}", all_skills_pool, val)
+                    self.skilled_combos.append(cb)
+
+            if "Juego" in self.bg_info.get("tool", ""):
+                self.gaming_combo = self._create_alert_dropdown(
+                    bg_box, "Competencia en Juego (Trasfondo)", ["Ninguno"] + GAMING_SETS,
+                    self.parent_view.builder_state.get("gaming_set_choice", "Dados")
+                )
+            else:
+                self.gaming_combo = None
+
         cls_box = ctk.CTkFrame(self.scroll)
         cls_box.pack(fill="x", padx=6, pady=6)
         ctk.CTkLabel(
@@ -369,33 +484,35 @@ class ShardOptionsDialog(ctk.CTkToplevel):
         saved_cls_skills = self.parent_view.builder_state.get("class_skill_choices", [])
         skill_pool = ["Ninguna"] + self.class_info["skill_pool"]
         for i in range(self.class_info["skill_choices_count"]):
-            val = saved_cls_skills[i] if i < len(saved_cls_skills) else "Ninguna"
+            if i < len(saved_cls_skills):
+                val = saved_cls_skills[i]
+            else:
+                val = "Ninguna"
             cb = self._create_alert_dropdown(cls_box, f"Competencia en Habilidad de {self.char_class} #{i+1}", skill_pool, val)
             self.skill_combos.append(cb)
 
         saved_inst = self.parent_view.builder_state.get("instrument_choices", [])
         for i in range(self.class_info.get("instruments_count", 0)):
-            val = saved_inst[i] if i < len(saved_inst) else "Ninguno"
+            if i < len(saved_inst):
+                val = saved_inst[i]
+            else:
+                val = "Ninguno"
             cb = self._create_alert_dropdown(cls_box, f"Instrumento Musical #{i+1}", ["Ninguno"] + MUSICAL_INSTRUMENTS, val)
             self.inst_combos.append(cb)
 
-        # Rasgos elegibles específicos de Nivel 1 por Clase
-        if self.char_class == "Clérigo":
-            self.prog_widgets["lvl1_order"] = self._create_alert_dropdown(
-                cls_box, "Orden Divina (Clérigo Nivel 1)",
-                ["Ninguna", "Protector (Armaduras pesadas y armas marciales)", "Taumaturgo (+1 Truco y +Sab a Religión/Arcano)"],
-                saved_prog.get("lvl1_order", "Ninguna")
+        if unlock_lvl == 1:
+            subs = ["Ninguna"] + self.class_info.get("subclasses", [])
+            curr_sub = self.parent_view.combo_subclass.get()
+            if curr_sub.startswith("Se elige"):
+                curr_sub = saved_prog.get("lvl1_subclass", "Ninguna")
+            self.prog_widgets["lvl1_subclass"] = self._create_alert_dropdown(
+                cls_box, f"Subclase de {self.char_class} (Nivel 1 en 5e)", subs, curr_sub
             )
-        elif self.char_class == "Druida":
-            self.prog_widgets["lvl1_order"] = self._create_alert_dropdown(
-                cls_box, "Orden Primigenia (Druida Nivel 1)",
-                ["Ninguna", "Guardián (Armaduras medias y armas marciales)", "Naturalista (+1 Truco y +Sab a Naturaleza/Arcano)"],
-                saved_prog.get("lvl1_order", "Ninguna")
-            )
-        elif self.char_class == "Guerrero":
+
+        if self.char_class == "Guerrero":
             self.prog_widgets["lvl1_style"] = self._create_alert_dropdown(
                 cls_box, "Estilo de Combate (Guerrero Nivel 1)",
-                ["Ninguno"] + FIGHTING_STYLES_55E,
+                ["Ninguno"] + fighting_styles_pool,
                 saved_prog.get("lvl1_style", "Ninguno")
             )
         elif self.char_class == "Pícaro":
@@ -405,111 +522,133 @@ class ShardOptionsDialog(ctk.CTkToplevel):
                     cls_box, f"Pericia de Pícaro Nivel 1 (Dobla competencia) #{i+1}",
                     all_skills_pool, saved_prog.get(k, "Ninguna")
                 )
-        elif self.char_class == "Brujo":
-            self.prog_widgets["lvl1_invoc_1"] = self._create_alert_dropdown(
-                cls_box, "Invocación Sobrenatural Inicial (Brujo Nivel 1)",
-                ["Ninguna"] + ELD_INVOCATIONS_55E, saved_prog.get("lvl1_invoc_1", "Ninguna")
-            )
+        elif self.edition == "5.5e":
+            if self.char_class == "Clérigo":
+                self.prog_widgets["lvl1_order"] = self._create_alert_dropdown(
+                    cls_box, "Orden Divina (Clérigo Nivel 1)",
+                    ["Ninguna", "Protector (Armaduras pesadas y armas marciales)", "Taumaturgo (+1 Truco y +Sab a Religión/Arcano)"],
+                    saved_prog.get("lvl1_order", "Ninguna")
+                )
+            elif self.char_class == "Druida":
+                self.prog_widgets["lvl1_order"] = self._create_alert_dropdown(
+                    cls_box, "Orden Primigenia (Druida Nivel 1)",
+                    ["Ninguna", "Guardián (Armaduras medias y armas marciales)", "Naturalista (+1 Truco y +Sab a Naturaleza/Arcano)"],
+                    saved_prog.get("lvl1_order", "Ninguna")
+                )
+            elif self.char_class == "Brujo":
+                self.prog_widgets["lvl1_invoc_1"] = self._create_alert_dropdown(
+                    cls_box, "Invocación Sobrenatural Inicial (Brujo Nivel 1)",
+                    ["Ninguna"] + invocations_pool, saved_prog.get("lvl1_invoc_1", "Ninguna")
+                )
 
-        # =====================================================================
-        # BLOQUE C: PROGRESIÓN ACUMULATIVA DESDE NIVEL 2 HASTA EL NIVEL ACTUAL
-        # =====================================================================
-        asi_levels = Character55eRules.get_asi_levels(self.char_class)
+        asi_levels = Character55eRules.get_asi_levels(self.char_class, self.edition)
 
         for lvl in range(2, self.level + 1):
             lvl_card = ctk.CTkFrame(self.scroll, fg_color="#182232")
             lvl_card.pack(fill="x", padx=6, pady=6)
 
-            # Obtener resumen de rasgos automáticos y de conjuros de este nivel
             c_feats = self.class_info.get("features_by_level", {}).get(lvl, [])
-            feat_names = ", ".join([f[0] for f in c_feats]) if c_feats else "Progresión de Conjuros y PG"
+            if c_feats:
+                feat_names = ", ".join([f[0] for f in c_feats])
+            else:
+                feat_names = "Progresión de Conjuros y PG"
 
             ctk.CTkLabel(
                 lvl_card, text=f"NIVEL {lvl} — {feat_names}",
                 font=("Segoe UI", 14, "bold"), text_color="#FBBF24"
             ).pack(anchor="w", padx=12, pady=(10, 4))
 
-            # Mostrar cuántos trucos, conjuros preparados y espacios tiene en este nivel
             slots_at_lvl = Character55eRules.get_spell_slots_by_level(
-                self.char_class, self.parent_view.combo_subclass.get(), lvl
+                self.char_class, self.parent_view.combo_subclass.get(), lvl, self.edition
             )
             if slots_at_lvl:
-                c_max = Character55eRules.get_cantrips_max(self.char_class, lvl, saved_prog.get("lvl1_order", ""))
-                p_max = Character55eRules.get_prepared_spells_max(self.char_class, lvl)
                 slots_txt = " | ".join([f"Niv.{k}: {v} esp." for k, v in sorted(slots_at_lvl.items())])
                 ctk.CTkLabel(
                     lvl_card,
-                    text=f"Magia en Nivel {lvl}: {c_max} Trucos | {p_max} Conjuros Preparados | Espacios: {slots_txt}",
+                    text=f"Espacios de Conjuro en Nivel {lvl}: {slots_txt}",
                     font=("Segoe UI", 11), text_color="#A78BFA"
                 ).pack(anchor="w", padx=12, pady=(0, 6))
 
-            # --- OPCIONES RELLENABLES DE NIVEL 2 ---
+            if lvl == unlock_lvl and unlock_lvl > 1:
+                subs = ["Ninguna"] + self.class_info.get("subclasses", [])
+                curr_sub = self.parent_view.combo_subclass.get()
+                sub_key = f"lvl{unlock_lvl}_subclass"
+                if curr_sub.startswith("Se elige"):
+                    curr_sub = saved_prog.get(sub_key, "Ninguna")
+                self.prog_widgets[sub_key] = self._create_alert_dropdown(
+                    lvl_card, f"Elección de Subclase de {self.char_class} (Nivel {unlock_lvl})", subs, curr_sub
+                )
+
             if lvl == 2:
                 if self.char_class == "Bardo":
                     ctk.CTkLabel(
-                        lvl_card, text="✔ Aprendiz de mucho activado (+mitad de competencia a habilidades no competentes).",
+                        lvl_card, text="Aprendiz de Mucho activado (+mitad de competencia a pruebas sin competencia).",
                         font=("Segoe UI", 11), text_color="#34D399"
                     ).pack(anchor="w", padx=12, pady=2)
-                    for i in range(2):
-                        k = f"lvl2_exp_{i+1}"
-                        self.prog_widgets[k] = self._create_alert_dropdown(
-                            lvl_card, f"Pericia de Bardo Nivel 2 (Dobla competencia) #{i+1}",
-                            all_skills_pool, saved_prog.get(k, "Ninguna")
-                        )
+                    if self.edition == "5.5e":
+                        for i in range(2):
+                            k = f"lvl2_exp_{i+1}"
+                            self.prog_widgets[k] = self._create_alert_dropdown(
+                                lvl_card, f"Pericia de Bardo Nivel 2 (Dobla competencia) #{i+1}",
+                                all_skills_pool, saved_prog.get(k, "Ninguna")
+                            )
                 elif self.char_class in ("Explorador", "Paladín"):
                     self.prog_widgets["lvl2_style"] = self._create_alert_dropdown(
                         lvl_card, f"Estilo de Combate ({self.char_class} Nivel 2)",
-                        ["Ninguno"] + FIGHTING_STYLES_55E, saved_prog.get("lvl2_style", "Ninguno")
+                        ["Ninguno"] + fighting_styles_pool, saved_prog.get("lvl2_style", "Ninguno")
                     )
-                    if self.char_class == "Explorador":
+                    if self.edition == "5.5e" and self.char_class == "Explorador":
                         self.prog_widgets["lvl2_exp_1"] = self._create_alert_dropdown(
                             lvl_card, "Explorador Hábil: Pericia en 1 Habilidad",
                             all_skills_pool, saved_prog.get("lvl2_exp_1", "Ninguna")
                         )
-                elif self.char_class == "Mago":
+                elif self.edition == "5.5e" and self.char_class == "Mago":
                     self.prog_widgets["lvl2_exp_1"] = self._create_alert_dropdown(
                         lvl_card, "Erudito (Mago Nivel 2): Pericia en 1 habilidad académica",
                         ["Ninguna", "Conocimiento Arcano", "Historia", "Investigación", "Medicina", "Naturaleza", "Religión"],
                         saved_prog.get("lvl2_exp_1", "Ninguna")
                     )
                 elif self.char_class == "Brujo":
-                    for i in range(2, 4):
+                    for i in range(1, 3):
                         k = f"lvl2_invoc_{i}"
                         self.prog_widgets[k] = self._create_alert_dropdown(
-                            lvl_card, f"Invocación Sobrenatural Adicional #{i} (Nivel 2)",
-                            ["Ninguna"] + ELD_INVOCATIONS_55E, saved_prog.get(k, "Ninguna")
+                            lvl_card, f"Invocación Sobrenatural #{i} (Nivel 2)",
+                            ["Ninguna"] + invocations_pool, saved_prog.get(k, "Ninguna")
                         )
 
-            # --- OPCIONES RELLENABLES DE NIVEL 3 (SUBCLASE Y RASGOS DE SUBCLASE) ---
             if lvl == 3:
-                subs = ["Ninguna"] + self.class_info.get("subclasses", [])
-                curr_sub = self.parent_view.combo_subclass.get()
-                if curr_sub == "Se elige en Nivel 3":
-                    curr_sub = saved_prog.get("lvl3_subclass", "Ninguna")
-                self.prog_widgets["lvl3_subclass"] = self._create_alert_dropdown(
-                    lvl_card, f"Elección de Subclase de {self.char_class} (Nivel 3)", subs, curr_sub
-                )
-
-                if self.char_class == "Bardo" and "Conocimiento" in curr_sub:
+                if self.edition == "5e" and self.char_class == "Bardo":
+                    for i in range(2):
+                        k = f"lvl3_exp_{i+1}"
+                        self.prog_widgets[k] = self._create_alert_dropdown(
+                            lvl_card, f"Pericia de Bardo Nivel 3 (Dobla competencia) #{i+1}",
+                            all_skills_pool, saved_prog.get(k, "Ninguna")
+                        )
+                if self.edition == "5e" and self.char_class == "Brujo":
+                    self.prog_widgets["lvl3_pact_boon"] = self._create_alert_dropdown(
+                        lvl_card, "Beneficio del Pacto (Brujo Nivel 3)",
+                        ["Ninguno", "Pacto de la Cadena", "Pacto del Filo", "Pacto del Grimorio"],
+                        saved_prog.get("lvl3_pact_boon", "Ninguno")
+                    )
+                if self.char_class == "Bardo" and "Conocimiento" in curr_subclass:
                     for i in range(3):
                         k = f"lvl3_lore_sk_{i+1}"
                         self.prog_widgets[k] = self._create_alert_dropdown(
                             lvl_card, f"Colegio del Conocimiento: Habilidad Adicional #{i+1}",
                             all_skills_pool, saved_prog.get(k, "Ninguna")
                         )
-                elif self.char_class == "Bárbaro":
+                elif self.edition == "5.5e" and self.char_class == "Bárbaro":
                     self.prog_widgets["lvl3_primal_sk"] = self._create_alert_dropdown(
                         lvl_card, "Conocimiento Primigenio: +1 Habilidad de Bárbaro",
                         skill_pool, saved_prog.get("lvl3_primal_sk", "Ninguna")
                     )
 
-            # --- MEJORAS DE CARACTERÍSTICA / DOTES GENERALES (Niveles 4, 8, 12, 16, etc.) ---
             if lvl in asi_levels:
                 k_feat = f"lvl{lvl}_feat"
                 k_ab1 = f"lvl{lvl}_ab1"
                 k_ab2 = f"lvl{lvl}_ab2"
                 self.prog_widgets[k_feat] = self._create_alert_dropdown(
-                    lvl_card, f"Dote General o Mejora de Característica (Nivel {lvl})",
+                    lvl_card, f"Dote o Mejora de Característica (Nivel {lvl})",
                     ["Ninguna"] + GENERAL_FEATS_55E,
                     saved_prog.get(k_feat, "Mejora de característica (+2 a una o +1 a dos)")
                 )
@@ -518,18 +657,15 @@ class ShardOptionsDialog(ctk.CTkToplevel):
                     ["Ninguno"] + ABILITIES, saved_prog.get(k_ab1, "Ninguno")
                 )
                 self.prog_widgets[k_ab2] = self._create_alert_dropdown(
-                    lvl_card, f"Aumento +1 Característica B (Nivel {lvl} — Elige la misma para +2, o ninguna si tu Dote solo da +1)",
+                    lvl_card, f"Aumento +1 Característica B (Nivel {lvl})",
                     ["Ninguno"] + ABILITIES, saved_prog.get(k_ab2, "Ninguno")
                 )
 
-            # --- OPCIONES DE NIVELES INTERMEDIOS Y ALTOS (Pericia Niv 6/9, Invocaciones, Don Épico) ---
             if lvl == 5 and self.char_class == "Brujo":
-                for i in range(4, 6):
-                    k = f"lvl5_invoc_{i}"
-                    self.prog_widgets[k] = self._create_alert_dropdown(
-                        lvl_card, f"Invocación Sobrenatural #{i} (Nivel 5)",
-                        ["Ninguna"] + ELD_INVOCATIONS_55E, saved_prog.get(k, "Ninguna")
-                    )
+                self.prog_widgets["lvl5_invoc_3"] = self._create_alert_dropdown(
+                    lvl_card, "Invocación Sobrenatural Adicional (Nivel 5)",
+                    ["Ninguna"] + invocations_pool, saved_prog.get("lvl5_invoc_3", "Ninguna")
+                )
 
             if lvl == 6 and self.char_class == "Pícaro":
                 for i in range(2):
@@ -539,29 +675,15 @@ class ShardOptionsDialog(ctk.CTkToplevel):
                         all_skills_pool, saved_prog.get(k, "Ninguna")
                     )
 
-            if lvl == 7 and self.char_class == "Clérigo":
-                self.prog_widgets["lvl7_blessed"] = self._create_alert_dropdown(
-                    lvl_card, "Golpes Benditos (Clérigo Nivel 7)",
-                    ["Ninguno", "Golpe divino (+1d8 radiante/necrótico con armas)", "Lanzamiento potente (+Sab al daño de trucos)"],
-                    saved_prog.get("lvl7_blessed", "Ninguno")
-                )
-
-            if lvl == 7 and self.char_class == "Druida":
-                self.prog_widgets["lvl7_elem_fury"] = self._create_alert_dropdown(
-                    lvl_card, "Furia Elemental (Druida Nivel 7)",
-                    ["Ninguna", "Golpe primordial (+1d8 elemental en ataques)", "Lanzamiento potente (+Sab al daño de trucos)"],
-                    saved_prog.get("lvl7_elem_fury", "Ninguna")
-                )
-
-            if lvl == 9 and self.char_class in ("Bardo", "Explorador"):
+            if lvl == 10 and self.edition == "5e" and self.char_class == "Bardo":
                 for i in range(2):
-                    k = f"lvl9_exp_{i+1}"
+                    k = f"lvl10_exp_{i+1}"
                     self.prog_widgets[k] = self._create_alert_dropdown(
-                        lvl_card, f"Pericia Adicional de {self.char_class} Nivel 9 #{i+1}",
+                        lvl_card, f"Pericia Adicional de Bardo Nivel 10 #{i+1}",
                         all_skills_pool, saved_prog.get(k, "Ninguna")
                     )
 
-            if lvl == 19:
+            if lvl == 19 and self.edition == "5.5e":
                 self.prog_widgets["lvl19_boon"] = self._create_alert_dropdown(
                     lvl_card, "Don Épico (Nivel 19)",
                     ["Ninguno"] + EPIC_BOONS_55E, saved_prog.get("lvl19_boon", "Ninguno")
@@ -572,12 +694,11 @@ class ShardOptionsDialog(ctk.CTkToplevel):
 
         ctk.CTkButton(footer, text="Cerrar", width=100, fg_color="#374151", command=self.destroy).pack(side="right", padx=6)
         ctk.CTkButton(
-            footer, text="✔ Aplicar Toda la Progresión a la Hoja", width=240, fg_color="#2563EB",
+            footer, text="Aplicar Toda la Progresión a la Hoja", width=240, fg_color="#2563EB",
             command=self._apply_changes
         ).pack(side="right", padx=6)
 
     def _apply_standard_array(self):
-        # Tabla "Conjunto estándar por clase" de la página 38 del Manual del Jugador 2024
         std_by_class = {
             "Bárbaro":   {"Fuerza": 15, "Destreza": 13, "Constitución": 14, "Inteligencia": 10, "Sabiduría": 12, "Carisma": 8},
             "Bardo":     {"Fuerza": 8,  "Destreza": 14, "Constitución": 12, "Inteligencia": 13, "Sabiduría": 10, "Carisma": 15},
@@ -592,7 +713,7 @@ class ShardOptionsDialog(ctk.CTkToplevel):
             "Paladín":   {"Fuerza": 15, "Destreza": 10, "Constitución": 13, "Inteligencia": 8,  "Sabiduría": 12, "Carisma": 14},
             "Pícaro":    {"Fuerza": 12, "Destreza": 15, "Constitución": 13, "Inteligencia": 14, "Sabiduría": 10, "Carisma": 8},
         }
-        arr = std_by_class.get(self.char_class, std_by_class["Bardo"])
+        arr = std_by_class.get(self.char_class, std_by_class["Guerrero"])
         for ab, val in arr.items():
             self.base_score_entries[ab].delete(0, "end")
             self.base_score_entries[ab].insert(0, str(val))
@@ -602,9 +723,15 @@ class ShardOptionsDialog(ctk.CTkToplevel):
         row.pack(fill="x", padx=12, pady=3)
 
         is_empty = current_val in ("Ninguno", "Ninguna", "")
+        if is_empty:
+            ico_txt = "!"
+            ico_col = "#EF4444"
+        else:
+            ico_txt = "OK"
+            ico_col = "#10B981"
+
         lbl_icon = ctk.CTkLabel(
-            row, text="!" if is_empty else "OK",
-            text_color="#EF4444" if is_empty else "#10B981",
+            row, text=ico_txt, text_color=ico_col,
             font=("Segoe UI", 13, "bold"), width=32
         )
         lbl_icon.pack(side="left", padx=(0, 8))
@@ -614,54 +741,85 @@ class ShardOptionsDialog(ctk.CTkToplevel):
 
         def on_change(choice):
             empty = choice in ("Ninguno", "Ninguna", "")
-            lbl_icon.configure(text="!" if empty else "OK", text_color="#EF4444" if empty else "#10B981")
+            if empty:
+                lbl_icon.configure(text="!", text_color="#EF4444")
+            else:
+                lbl_icon.configure(text="OK", text_color="#10B981")
 
         combo = ctk.CTkComboBox(inner, values=values, command=on_change)
-        combo.set(current_val if current_val in values else values[0])
+        if current_val in values:
+            combo.set(current_val)
+        else:
+            combo.set(values[0])
         combo.pack(fill="x")
 
         ctk.CTkLabel(inner, text=subtitle, font=("Segoe UI", 11), text_color="#9CA3AF").pack(anchor="w")
         return combo
 
     def _refresh_bg_ability_pools(self):
-        pool = ["Ninguno"] + (ABILITIES if self.allow_all_abil_var.get() else self.bg_info["abilities"])
+        if self.allow_all_abil_var.get():
+            pool = ["Ninguno"] + ABILITIES
+        else:
+            pool = ["Ninguno"] + self.bg_info["abilities"]
         for cb in self.bg_abil_combos:
             cb.configure(values=pool)
 
     def _apply_changes(self):
-        # 1. Leer puntuaciones base
         base_scores = {}
         for ab, entry_w in self.base_score_entries.items():
             raw = entry_w.get().strip()
-            base_scores[ab] = int(raw) if raw.isdigit() else 10
+            if raw.isdigit():
+                base_scores[ab] = int(raw)
+            else:
+                base_scores[ab] = 10
         self.parent_view.builder_state["base_scores"] = base_scores
 
-        # 2. Guardar progresión nivel por nivel
-        prog_data = {k: cb.get() for k, cb in self.prog_widgets.items()}
+        prog_data = {}
+        for k, cb in self.prog_widgets.items():
+            prog_data[k] = cb.get()
         self.parent_view.builder_state["level_progression_choices"] = prog_data
 
-        if "species_lineage" in prog_data:
-            self.parent_view.builder_state["species_lineage"] = prog_data["species_lineage"]
+        chosen_subrace = prog_data.get("species_lineage", "Ninguno")
+        self.parent_view.builder_state["species_lineage"] = chosen_subrace
+
         if "human_extra_skill" in prog_data:
             self.parent_view.builder_state["human_extra_skill"] = prog_data["human_extra_skill"]
 
-        # Si eligió subclase en Nivel 3, actualizar el combo principal
-        if self.level >= 3 and prog_data.get("lvl3_subclass") and prog_data["lvl3_subclass"] != "Ninguna":
-            self.parent_view.combo_subclass.set(prog_data["lvl3_subclass"])
+        unlock_lvl = Character55eRules.get_subclass_unlock_level(self.char_class, self.edition)
+        sub_key = f"lvl{unlock_lvl}_subclass"
+        if self.level >= unlock_lvl and prog_data.get(sub_key) and prog_data[sub_key] != "Ninguna":
+            self.parent_view.combo_subclass.set(prog_data[sub_key])
 
-        # 3. Calcular Puntuaciones Finales = Base + Trasfondo (+1/+1/+1) + Mejoras de Nivel (4, 8, 12, 16...)
         final_scores = dict(base_scores)
-        bg_bonuses = {
-            "+1_a": self.bg_abil_combos[0].get(),
-            "+1_b": self.bg_abil_combos[1].get(),
-            "+1_c": self.bg_abil_combos[2].get(),
-        }
-        self.parent_view.builder_state["bg_bonuses"] = bg_bonuses
-        for _, ab_chosen in bg_bonuses.items():
-            if ab_chosen in final_scores:
-                final_scores[ab_chosen] = min(20, final_scores[ab_chosen] + 1)
 
-        for lvl in Character55eRules.get_asi_levels(self.char_class):
+        if self.edition == "5e":
+            for ab_k, bonus_v in self.species_info.get("ability_bonuses", {}).items():
+                if ab_k in final_scores:
+                    final_scores[ab_k] = min(20, final_scores[ab_k] + bonus_v)
+
+            subrace_data = self.species_info.get("subraces", {}).get(chosen_subrace, {})
+            for ab_k, bonus_v in subrace_data.get("ability_bonuses", {}).items():
+                if ab_k in final_scores:
+                    final_scores[ab_k] = min(20, final_scores[ab_k] + bonus_v)
+
+            racial_extra_abs = [cb.get() for cb in self.racial_extra_abil_combos]
+            self.parent_view.builder_state["racial_extra_abilities"] = racial_extra_abs
+            if self.species == "Semielfo" or "Alternativo" in chosen_subrace:
+                for ab_up in racial_extra_abs:
+                    if ab_up in final_scores:
+                        final_scores[ab_up] = min(20, final_scores[ab_up] + 1)
+        else:
+            bg_bonuses = {
+                "+1_a": self.bg_abil_combos[0].get(),
+                "+1_b": self.bg_abil_combos[1].get(),
+                "+1_c": self.bg_abil_combos[2].get(),
+            }
+            self.parent_view.builder_state["bg_bonuses"] = bg_bonuses
+            for _, ab_chosen in bg_bonuses.items():
+                if ab_chosen in final_scores:
+                    final_scores[ab_chosen] = min(20, final_scores[ab_chosen] + 1)
+
+        for lvl in Character55eRules.get_asi_levels(self.char_class, self.edition):
             if lvl <= self.level:
                 for key_ab in (f"lvl{lvl}_ab1", f"lvl{lvl}_ab2"):
                     ab_up = prog_data.get(key_ab, "Ninguno")
@@ -671,26 +829,33 @@ class ShardOptionsDialog(ctk.CTkToplevel):
         for ab, val in final_scores.items():
             self.parent_view.score_vars[ab].set(str(val))
 
-        # 4. Recopilar Habilidades Competentes (Clase + Trasfondo + Habilidoso + Especie + Subclase)
         cls_skills = [cb.get() for cb in self.skill_combos if cb.get() not in ("Ninguna", "")]
         skilled_skills = [cb.get() for cb in self.skilled_combos if cb.get() not in ("Ninguna", "")]
-        bg_fixed_skills = self.bg_info["skills"]
+        racial_extra_sk = [cb.get() for cb in self.racial_extra_skill_combos if cb.get() not in ("Ninguna", "")]
+        bg_fixed_skills = self.bg_info.get("skills", [])
+        race_fixed_skills = self.species_info.get("fixed_skills", [])
+
         extra_lvl_skills = []
         for k, v in prog_data.items():
             if ("_sk" in k or "human_extra_skill" in k) and v not in ("Ninguna", "Ninguno", ""):
                 extra_lvl_skills.append(v)
 
-        # Recopilar Habilidades con Pericia (Expertise) desbloqueadas hasta este nivel
         expertise_skills = []
         for k, v in prog_data.items():
             if "_exp_" in k and v not in ("Ninguna", "Ninguno", ""):
                 expertise_skills.append(v)
-        self.parent_view.builder_state["expertise_skills"] = expertise_skills
 
+        self.parent_view.builder_state["expertise_skills"] = expertise_skills
         self.parent_view.builder_state["class_skill_choices"] = cls_skills
         self.parent_view.builder_state["skilled_feat_choices"] = skilled_skills
+        self.parent_view.builder_state["racial_extra_skills"] = racial_extra_sk
         self.parent_view.builder_state["instrument_choices"] = [cb.get() for cb in self.inst_combos if cb.get() != "Ninguno"]
-        self.parent_view.builder_state["language_choices"] = ["Común"] + [cb.get() for cb in self.lang_combos if cb.get() != "Ninguno"]
+
+        base_langs = list(self.species_info.get("languages", ["Común"]))
+        for cb in self.lang_combos:
+            if cb.get() != "Ninguno" and cb.get() not in base_langs:
+                base_langs.append(cb.get())
+        self.parent_view.builder_state["language_choices"] = base_langs
 
         if self.gaming_combo:
             self.parent_view.builder_state["gaming_set_choice"] = self.gaming_combo.get()
@@ -698,18 +863,32 @@ class ShardOptionsDialog(ctk.CTkToplevel):
         for ab in ABILITIES:
             self.parent_view.save_prof_vars[ab].set(ab in self.class_info["saves"])
 
-        combined_skills = set(cls_skills + skilled_skills + bg_fixed_skills + extra_lvl_skills + expertise_skills)
+        combined_skills = set(
+            cls_skills + skilled_skills + racial_extra_sk + bg_fixed_skills +
+            race_fixed_skills + extra_lvl_skills + expertise_skills
+        )
         for sk_name, _ in SKILLS_55E:
             self.parent_view.skill_prof_vars[sk_name].set(sk_name in combined_skills)
 
-        # 5. Actualizar Velocidad, Dote de Origen y Puntos de Golpe Máximos según el Nivel y Constitución final
-        sp_data = SPECIES_55E.get(self.species, {"speed": "9 m"})
-        speed_str = "10,5 m" if "Elfo del Bosque" in prog_data.get("species_lineage", "") else sp_data["speed"]
+        if self.edition == "5e":
+            subrace_data = self.species_info.get("subraces", {}).get(chosen_subrace, {})
+            speed_str = subrace_data.get("speed", self.species_info.get("speed", "30 pies"))
+            feat_str = self.bg_info.get("feature", "")
+        else:
+            if "Elfo del Bosque" in chosen_subrace:
+                speed_str = "10,5 m"
+            else:
+                speed_str = self.species_info.get("speed", "9 m")
+            feat_str = self.bg_info.get("feat", "")
+
         self.parent_view._set_entry(self.parent_view.entry_speed, speed_str)
-        self.parent_view._set_entry(self.parent_view.entry_origin_feat, self.bg_info["feat"])
+        self.parent_view._set_entry(self.parent_view.entry_origin_feat, feat_str)
 
         con_mod = Character55eRules.get_modifier(final_scores["Constitución"])
-        max_hp = Character55eRules.calculate_max_hp(self.char_class, self.level, con_mod, self.bg_info["feat"], self.species)
+        max_hp = Character55eRules.calculate_max_hp(
+            self.char_class, self.level, con_mod, feat_str,
+            self.species, self.edition, chosen_subrace, self.parent_view.combo_subclass.get()
+        )
         self.parent_view._set_entry(self.parent_view.entry_hp_max, str(max_hp))
         self.parent_view._set_entry(self.parent_view.entry_hp_curr, str(max_hp))
 
@@ -1107,6 +1286,7 @@ class CharacterSheetView(ctk.CTkFrame):
     def __init__(self, master, db: DatabaseManager):
         super().__init__(master, fg_color="transparent")
         self.db = db
+        self.edition = self.db.get_active_edition()
         self.current_char_id = None
         self.builder_state = Character55eRules.default_stats_payload()
 
@@ -1132,9 +1312,8 @@ class CharacterSheetView(ctk.CTkFrame):
         sidebar.grid_columnconfigure(0, weight=1)
         sidebar.grid_rowconfigure(3, weight=1)
 
-        ctk.CTkLabel(sidebar, text="Héroes 5.5e", font=("Segoe UI", 18, "bold")).grid(
-            row=0, column=0, padx=12, pady=(12, 6), sticky="w"
-        )
+        self.lbl_sidebar_heroes = ctk.CTkLabel(sidebar, text="Héroes 5.5e", font=("Segoe UI", 18, "bold"))
+        self.lbl_sidebar_heroes.grid(row=0, column=0, padx=12, pady=(12, 6), sticky="w")
 
         btn_new = ctk.CTkButton(
             sidebar, text="+ Nuevo Personaje", fg_color="#2E7D32", hover_color="#1B5E20",
@@ -1148,6 +1327,10 @@ class CharacterSheetView(ctk.CTkFrame):
 
         ctk.CTkButton(io_frame, text="Importar JSON", width=95, fg_color="#3B3B3B", command=self._import_json).grid(row=0, column=0, padx=(0, 3), sticky="ew")
         ctk.CTkButton(io_frame, text="Exportar JSON", width=95, fg_color="#3B3B3B", command=self._export_json).grid(row=0, column=1, padx=(3, 0), sticky="ew")
+        ctk.CTkButton(
+            io_frame, text="Imprimir / Exportar PDF", fg_color="#8B2635", hover_color="#6E1D29",
+            command=self._export_sheet_pdf
+        ).grid(row=1, column=0, columnspan=2, pady=(5, 0), sticky="ew")
 
         self.char_list_scroll = ctk.CTkScrollableFrame(sidebar, label_text="Personajes Guardados")
         self.char_list_scroll.grid(row=3, column=0, padx=10, pady=8, sticky="nsew")
@@ -1170,11 +1353,13 @@ class CharacterSheetView(ctk.CTkFrame):
         self.entry_name = self._labeled_entry(header, "Nombre del Personaje", 0, 0, "Ej. Nistor")
         self.entry_player = self._labeled_entry(header, "Jugador", 0, 1, "Víctor")
 
-        ctk.CTkLabel(header, text="Especie (5.5e)", font=("Segoe UI", 11, "bold")).grid(row=0, column=2, padx=8, pady=(6, 0), sticky="w")
+        self.lbl_species = ctk.CTkLabel(header, text="Especie (5.5e)", font=("Segoe UI", 11, "bold"))
+        self.lbl_species.grid(row=0, column=2, padx=8, pady=(6, 0), sticky="w")
         self.combo_species = ctk.CTkComboBox(header, values=list(SPECIES_55E.keys()), command=self._on_species_change)
         self.combo_species.grid(row=1, column=2, padx=8, pady=(0, 6), sticky="ew")
 
-        ctk.CTkLabel(header, text="Trasfondo (2024)", font=("Segoe UI", 11, "bold")).grid(row=0, column=3, padx=8, pady=(6, 0), sticky="w")
+        self.lbl_bg = ctk.CTkLabel(header, text="Trasfondo (2024)", font=("Segoe UI", 11, "bold"))
+        self.lbl_bg.grid(row=0, column=3, padx=8, pady=(6, 0), sticky="w")
         self.combo_bg = ctk.CTkComboBox(header, values=list(BACKGROUNDS_55E.keys()), command=self._on_background_change)
         self.combo_bg.grid(row=1, column=3, padx=8, pady=(0, 6), sticky="ew")
 
@@ -1182,7 +1367,8 @@ class CharacterSheetView(ctk.CTkFrame):
         self.combo_class = ctk.CTkComboBox(header, values=list(CLASSES_55E.keys()), command=self._on_class_change)
         self.combo_class.grid(row=3, column=0, padx=8, pady=(0, 8), sticky="ew")
 
-        ctk.CTkLabel(header, text="Subclase (Niv. 3+)", font=("Segoe UI", 11, "bold")).grid(row=2, column=1, padx=8, pady=(6, 0), sticky="w")
+        self.lbl_subclass = ctk.CTkLabel(header, text="Subclase (Niv. 3+)", font=("Segoe UI", 11, "bold"))
+        self.lbl_subclass.grid(row=2, column=1, padx=8, pady=(6, 0), sticky="w")
         self.combo_subclass = ctk.CTkComboBox(
             header, values=["Sin Subclase (Niv. 1-2)"],
             command=lambda _: (self._update_features_display(), self._recalculate_all())
@@ -1193,11 +1379,35 @@ class CharacterSheetView(ctk.CTkFrame):
         self.combo_level = ctk.CTkComboBox(header, values=[str(i) for i in range(1, 21)], command=lambda _: self._on_class_change(self.combo_class.get()))
         self.combo_level.grid(row=3, column=2, padx=8, pady=(0, 8), sticky="ew")
 
-        self.entry_origin_feat = self._labeled_entry(header, "Dote de Origen (Origin Feat)", 2, 3, "Habilidoso (Skilled)")
+        self.lbl_origin_feat = ctk.CTkLabel(header, text="Dote de Origen (Origin Feat)", font=("Segoe UI", 11, "bold"))
+        self.lbl_origin_feat.grid(row=2, column=3, padx=8, pady=(6, 0), sticky="w")
+        self.entry_origin_feat = ctk.CTkEntry(header, placeholder_text="Habilidoso (Skilled)")
+        self.entry_origin_feat.grid(row=3, column=3, padx=8, pady=(0, 8), sticky="ew")
+
+        portrait_box = ctk.CTkFrame(header, fg_color="#111827", width=128)
+        portrait_box.grid(row=0, column=4, rowspan=4, sticky="ns", padx=(4, 8), pady=6)
+        portrait_box.grid_propagate(False)
+
+        self.lbl_portrait_img = ctk.CTkLabel(
+            portrait_box, text="Sin\nRetrato", width=108, height=108,
+            fg_color="#1F2937", corner_radius=6, font=("Segoe UI", 11)
+        )
+        self.lbl_portrait_img.pack(padx=10, pady=(8, 4))
+
+        p_btns = ctk.CTkFrame(portrait_box, fg_color="transparent")
+        p_btns.pack(fill="x", padx=8, pady=(0, 6))
+        ctk.CTkButton(
+            p_btns, text="Foto", width=72, height=22, fg_color="#2563EB",
+            font=("Segoe UI", 11, "bold"), command=self._select_portrait_image
+        ).pack(side="left", fill="x", expand=True, padx=(0, 2))
+        ctk.CTkButton(
+            p_btns, text="X", width=26, height=22, fg_color="#7F1D1D",
+            font=("Segoe UI", 11, "bold"), command=self._clear_portrait_image
+        ).pack(side="right", padx=(2, 0))
 
         # Barra de XP y Descansos
         xp_rest_bar = ctk.CTkFrame(header, fg_color="#111827")
-        xp_rest_bar.grid(row=4, column=0, columnspan=4, sticky="ew", padx=8, pady=(4, 2))
+        xp_rest_bar.grid(row=4, column=0, columnspan=5, sticky="ew", padx=8, pady=(4, 2))
 
         self.lbl_xp_info = ctk.CTkLabel(xp_rest_bar, text="XP: 0 / 300", font=("Segoe UI", 12, "bold"), text_color="#FBBF24")
         self.lbl_xp_info.pack(side="left", padx=(12, 6), pady=6)
@@ -1223,7 +1433,7 @@ class CharacterSheetView(ctk.CTkFrame):
 
         # Barra de Acciones y Pasivas
         action_bar = ctk.CTkFrame(header, fg_color="#1F2937")
-        action_bar.grid(row=5, column=0, columnspan=4, sticky="ew", padx=8, pady=(2, 8))
+        action_bar.grid(row=5, column=0, columnspan=5, sticky="ew", padx=8, pady=(2, 8))
 
         self.lbl_prof_bonus = ctk.CTkLabel(action_bar, text="Competencia: +2", font=("Segoe UI", 12, "bold"), text_color="#60A5FA")
         self.lbl_prof_bonus.pack(side="left", padx=10, pady=6)
@@ -1289,9 +1499,36 @@ class CharacterSheetView(ctk.CTkFrame):
             self.save_labels[ab] = lbl_save
 
         self.chk_inspiration_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(
+        self.chk_inspiration = ctk.CTkCheckBox(
             left_col, text="Inspiración Heroica (5.5e)", variable=self.chk_inspiration_var
-        ).grid(row=9, column=0, columnspan=4, padx=10, pady=10, sticky="w")
+        )
+        self.chk_inspiration.grid(row=9, column=0, columnspan=4, padx=10, pady=10, sticky="w")
+        death_box = ctk.CTkFrame(left_col, fg_color="#1F2937")
+        death_box.grid(row=10, column=0, columnspan=4, padx=8, pady=(4, 8), sticky="ew")
+
+        ctk.CTkLabel(
+            death_box, text="Salvaciones contra Muerte",
+            font=("Segoe UI", 11, "bold"), text_color="#FBBF24"
+        ).pack(anchor="w", padx=8, pady=(6, 2))
+
+        succ_row = ctk.CTkFrame(death_box, fg_color="transparent")
+        succ_row.pack(fill="x", padx=8, pady=2)
+        ctk.CTkLabel(succ_row, text="Éxitos:", font=("Segoe UI", 11), width=50, anchor="w").pack(side="left")
+        self.death_succ_vars = []
+        for _ in range(3):
+            v = ctk.BooleanVar(value=False)
+            ctk.CTkCheckBox(succ_row, text="", width=22, variable=v, fg_color="#10B981").pack(side="left", padx=4)
+            self.death_succ_vars.append(v)
+
+        fail_row = ctk.CTkFrame(death_box, fg_color="transparent")
+        fail_row.pack(fill="x", padx=8, pady=(2, 6))
+        ctk.CTkLabel(fail_row, text="Fallos:", font=("Segoe UI", 11), width=50, anchor="w").pack(side="left")
+        self.death_fail_vars = []
+        for _ in range(3):
+            v = ctk.BooleanVar(value=False)
+            ctk.CTkCheckBox(fail_row, text="", width=22, variable=v, fg_color="#EF4444").pack(side="left", padx=4)
+            self.death_fail_vars.append(v)
+        
 
     def _build_combat_and_mastery_section(self):
         mid_col = ctk.CTkFrame(self.sheet_scroll)
@@ -1336,16 +1573,19 @@ class CharacterSheetView(ctk.CTkFrame):
         # Iniciativa, Velocidad y Puntos de Golpe
         self.lbl_initiative = ctk.CTkLabel(mid_col, text="Iniciativa: +0", font=("Segoe UI", 13, "bold"), text_color="#34D399")
         self.lbl_initiative.grid(row=2, column=0, columnspan=2, padx=10, pady=4, sticky="w")
-        self.entry_speed = self._labeled_entry(mid_col, "Velocidad (m)", 2, 2, "9 m")
+
+        self.lbl_speed = ctk.CTkLabel(mid_col, text="Velocidad (m)", font=("Segoe UI", 11, "bold"))
+        self.lbl_speed.grid(row=2, column=2, padx=8, pady=(6, 0), sticky="w")
+        self.entry_speed = ctk.CTkEntry(mid_col, placeholder_text="9 m")
+        self.entry_speed.grid(row=3, column=2, padx=8, pady=(0, 6), sticky="ew")
 
         self.entry_hp_max = self._labeled_entry(mid_col, "PG Máximos", 4, 0, "59")
         self.entry_hp_curr = self._labeled_entry(mid_col, "PG Actuales", 4, 1, "59")
         self.entry_hp_temp = self._labeled_entry(mid_col, "PG Temporales", 4, 2, "0")
 
         # Armas con Selector Desplegable Automático
-        ctk.CTkLabel(mid_col, text="Armas Equipadas (Autocompletado 5.5e)", font=("Segoe UI", 13, "bold")).grid(
-            row=6, column=0, columnspan=3, padx=10, pady=(8, 2), sticky="w"
-        )
+        self.lbl_weapons_header = ctk.CTkLabel(mid_col, text="Armas Equipadas (Autocompletado 5.5e)", font=("Segoe UI", 13, "bold"))
+        self.lbl_weapons_header.grid(row=6, column=0, columnspan=3, padx=10, pady=(8, 2), sticky="w")
 
         self.weapon_widgets = []
         weapon_names_list = list(WEAPONS_CATALOG_55E.keys())
@@ -1397,23 +1637,31 @@ class CharacterSheetView(ctk.CTkFrame):
 
     def _on_weapon_preset_selected(self, slot_idx: int, weapon_name: str):
         w_ui = self.weapon_widgets[slot_idx]
-        preset = WEAPONS_CATALOG_55E.get(weapon_name)
+        weapons_cat = Character55eRules.get_weapons_catalog(self.edition)
+        preset = weapons_cat.get(weapon_name)
         if not preset:
             return
 
-        # Si el arma es Sutil (Finesse), elegir automáticamente entre Fuerza o Destreza según cuál tenga más alta el personaje
         if preset.get("finesse"):
             str_val = int(self.score_vars["Fuerza"].get() or 10)
             dex_val = int(self.score_vars["Destreza"].get() or 10)
-            best_abil = "Destreza" if dex_val >= str_val else "Fuerza"
+            if dex_val >= str_val:
+                best_abil = "Destreza"
+            else:
+                best_abil = "Fuerza"
             w_ui["ability"].set(best_abil)
         else:
             w_ui["ability"].set(preset.get("ability", "Fuerza"))
 
         self._set_entry(w_ui["damage"], preset.get("damage", ""))
-        mast = preset.get("mastery", "Ninguna")
-        w_ui["mastery"].set(mast)
-        w_ui["desc_label"].configure(text=WEAPON_MASTERIES_55E.get(mast, ""))
+
+        if self.edition == "5e":
+            w_ui["mastery"].set("Ninguna")
+            w_ui["desc_label"].configure(text="Sin Maestrías de Armas en 5e (2014).")
+        else:
+            mast = preset.get("mastery", "Ninguna")
+            w_ui["mastery"].set(mast)
+            w_ui["desc_label"].configure(text=WEAPON_MASTERIES_55E.get(mast, ""))
         self._recalculate_all()
 
     def _build_skills_section(self):
@@ -1644,21 +1892,26 @@ class CharacterSheetView(ctk.CTkFrame):
         lvl = int(self.combo_level.get() or 1)
         char_class = self.combo_class.get()
         hd_faces = CLASSES_55E.get(char_class, {}).get("hit_die", 8)
+        curr_hd = int(self.builder_state.get("hit_dice_current", lvl))
+        new_hd = Character55eRules.get_long_rest_hit_dice(lvl, curr_hd, self.edition)
 
         self._set_entry(self.entry_hp_curr, str(hp_max))
         self._set_entry(self.entry_hp_temp, "0")
-        self.builder_state["hit_dice_current"] = lvl
+        self.builder_state["hit_dice_current"] = new_hd
 
-        if self.combo_species.get() == "Humano":
+        if self.edition == "5.5e" and self.combo_species.get() == "Humano":
             self.chk_inspiration_var.set(True)
 
+        for i in range(3):
+            self.death_succ_vars[i].set(False)
+            self.death_fail_vars[i].set(False)
         self._recalculate_all()
         messagebox.showinfo(
-            "Descanso Largo Completado (Reglas 5.5e)",
+            f"Descanso Largo Completado (Reglas {self.edition})",
             f"• Puntos de Golpe restaurados al máximo ({hp_max} / {hp_max}).\n"
             f"• PG Temporales reiniciados a 0.\n"
-            f"• Dados de Golpe restaurados al máximo ({lvl}/{lvl} d{hd_faces}).\n"
-            f"• Todos tus espacios de conjuro y usos de rasgos por Descanso Largo han sido restaurados."
+            f"• Dados de Golpe: {new_hd}/{lvl} d{hd_faces}.\n"
+            f"• Espacios de conjuro y usos de rasgos restaurados."
         )
 
     # --- LÓGICA DE INVENTARIO Y CONTENEDORES DESPLEGABLES ---
@@ -1737,39 +1990,60 @@ class CharacterSheetView(ctk.CTkFrame):
         for w in scroll_widget.winfo_children():
             w.destroy()
 
+        if self.edition == "5e":
+            unit = "lb"
+            mult = 2.0
+        else:
+            unit = "kg"
+            mult = 1.0
+
         items = self.builder_state.get(inv_key, [])
         total_kg = 0.0
 
         for idx, it in enumerate(items):
             item_total_kg = Character55eRules.calculate_item_tree_weight(it)
             total_kg += item_total_kg
+            display_item_weight = round(item_total_kg * mult, 2)
             is_cont = bool(it.get("is_container", False))
             expanded = bool(it.get("expanded", True))
             contents = it.get("contents", [])
 
-            card = ctk.CTkFrame(scroll_widget, fg_color="#1E293B" if is_cont else "#1F2937")
+            if is_cont:
+                card_color = "#1E293B"
+            else:
+                card_color = "#1F2937"
+
+            card = ctk.CTkFrame(scroll_widget, fg_color=card_color)
             card.pack(fill="x", padx=2, pady=2)
 
             top_row = ctk.CTkFrame(card, fg_color="transparent")
             top_row.pack(fill="x", padx=4, pady=3)
 
             if is_cont:
-                arrow = "▼" if expanded else "▶"
+                if expanded:
+                    arrow = "▼"
+                else:
+                    arrow = "▶"
                 btn_exp = ctk.CTkButton(
-                    top_row, text=f"{arrow} {it['name']} ({len(contents)} ítems) — {item_total_kg} kg",
+                    top_row, text=f"{arrow} {it['name']} ({len(contents)} ítems) — {display_item_weight} {unit}",
                     anchor="w", fg_color="#334155", hover_color="#475569", height=26,
                     font=("Segoe UI", 11, "bold"),
                     command=lambda k=inv_key, i=idx: self._toggle_container_expand(k, i)
                 )
                 btn_exp.pack(side="left", fill="x", expand=True, padx=(2, 4))
 
+                if is_char:
+                    target_str = "char"
+                else:
+                    target_str = "mount"
+
                 ctk.CTkButton(
                     top_row, text="+ Meter", width=56, height=24, fg_color="#2563EB",
-                    command=lambda t=("char" if is_char else "mount"), i=idx: ItemCatalogModal(self, default_target=t, container_idx=i)
+                    command=lambda t=target_str, i=idx: ItemCatalogModal(self, default_target=t, container_idx=i)
                 ).pack(side="left", padx=2)
             else:
                 ctk.CTkLabel(
-                    top_row, text=f"{it['name']} (x{it['qty']}) — {item_total_kg} kg", font=("Segoe UI", 11)
+                    top_row, text=f"{it['name']} (x{it['qty']}) — {display_item_weight} {unit}", font=("Segoe UI", 11)
                 ).pack(side="left", padx=6)
 
             ctk.CTkButton(
@@ -1777,14 +2051,18 @@ class CharacterSheetView(ctk.CTkFrame):
                 command=lambda k=inv_key, i=idx: self._remove_inv_item(k, i)
             ).pack(side="right", padx=2)
 
-            transfer_txt = "→ Montura" if is_char else "← PJ"
-            other_key = "inventory_mount" if is_char else "inventory_char"
+            if is_char:
+                transfer_txt = "-> Montura"
+                other_key = "inventory_mount"
+            else:
+                transfer_txt = "<- PJ"
+                other_key = "inventory_char"
+
             ctk.CTkButton(
                 top_row, text=transfer_txt, width=68, height=24, fg_color="#374151",
                 command=lambda fk=inv_key, tk=other_key, i=idx: self._transfer_inv_item(fk, tk, i)
             ).pack(side="right", padx=2)
 
-            # Si es un contenedor y está expandido, mostrar sus objetos internos
             if is_cont and expanded:
                 sub_box = ctk.CTkFrame(card, fg_color="#0F172A")
                 sub_box.pack(fill="x", padx=(18, 6), pady=(0, 5))
@@ -1797,11 +2075,12 @@ class CharacterSheetView(ctk.CTkFrame):
                 else:
                     for s_idx, sub in enumerate(contents):
                         s_kg = round(float(sub.get("qty", 1)) * float(sub.get("weight_kg", 0.0)), 2)
+                        display_sub_weight = round(s_kg * mult, 2)
                         s_row = ctk.CTkFrame(sub_box, fg_color="transparent")
                         s_row.pack(fill="x", padx=6, pady=1)
 
                         ctk.CTkLabel(
-                            s_row, text=f"↳ {sub['name']} (x{sub['qty']}) — {s_kg} kg",
+                            s_row, text=f"↳ {sub['name']} (x{sub['qty']}) — {display_sub_weight} {unit}",
                             font=("Segoe UI", 11), text_color="#CBD5E1"
                         ).pack(side="left")
 
@@ -1816,23 +2095,54 @@ class CharacterSheetView(ctk.CTkFrame):
         total_char_kg = self._render_inventory_column(self.scroll_char_inv, "inventory_char", is_char=True)
 
         raw_str = self.score_vars.get("Fuerza", ctk.StringVar(value="10")).get().strip()
-        str_score = int(raw_str) if raw_str.isdigit() else 10
-        max_char_kg = Character55eRules.get_carrying_capacity_kg(str_score, self.combo_species.get())
-        over_char = total_char_kg > max_char_kg
+        if raw_str.isdigit():
+            str_score = int(raw_str)
+        else:
+            str_score = 10
+
+        max_char = Character55eRules.get_carrying_capacity(str_score, self.combo_species.get(), self.edition)
+        if self.edition == "5e":
+            unit = "lb"
+            display_char = round(total_char_kg * 2.0, 1)
+        else:
+            unit = "kg"
+            display_char = total_char_kg
+
+        over_char = display_char > max_char
+        if over_char:
+            char_status = " [SOBRECARGA]"
+            char_color = "#EF4444"
+        else:
+            char_status = ""
+            char_color = "#34D399"
+
         self.lbl_char_weight.configure(
-            text=f"Peso: {total_char_kg:.1f} / {max_char_kg:.1f} kg" + (" [SOBRECARGA]" if over_char else ""),
-            text_color="#EF4444" if over_char else "#34D399"
+            text=f"Peso: {display_char:.1f} / {max_char:.1f} {unit}{char_status}",
+            text_color=char_color
         )
 
         mount_name = self.combo_mount.get()
         self.builder_state["mount_type"] = mount_name
-        max_mount_kg = MOUNTS_CAPACITY_KG.get(mount_name, 0.0)
+        mounts_cat = Character55eRules.get_mounts_catalog(self.edition)
+        max_mount = mounts_cat.get(mount_name, 0.0)
 
         total_mount_kg = self._render_inventory_column(self.scroll_mount_inv, "inventory_mount", is_char=False)
-        over_mount = total_mount_kg > max_mount_kg and max_mount_kg > 0
+        if self.edition == "5e":
+            display_mount = round(total_mount_kg * 2.0, 1)
+        else:
+            display_mount = total_mount_kg
+
+        over_mount = display_mount > max_mount and max_mount > 0
+        if over_mount:
+            mount_status = " [EXCESO]"
+            mount_color = "#EF4444"
+        else:
+            mount_status = ""
+            mount_color = "#60A5FA"
+
         self.lbl_mount_weight.configure(
-            text=f"Carga: {total_mount_kg:.1f} / {max_mount_kg:.1f} kg" + (" [EXCESO]" if over_mount else ""),
-            text_color="#EF4444" if over_mount else "#60A5FA"
+            text=f"Carga: {display_mount:.1f} / {max_mount:.1f} {unit}{mount_status}",
+            text_color=mount_color
         )
 
     def _lookup_feature_in_pdf(self):
@@ -1851,90 +2161,108 @@ class CharacterSheetView(ctk.CTkFrame):
         self.txt_feat_pdf_result.insert("1.0", "\n".join(lines))
 
     def _update_features_display(self):
-            sp_name = self.combo_species.get()
-            c_name = self.combo_class.get()
-            sub_name = self.combo_subclass.get()
-            lvl = int(self.combo_level.get() or 1)
-            prof = Character55eRules.get_proficiency_bonus(lvl)
+        sp_name = self.combo_species.get()
+        c_name = self.combo_class.get()
+        sub_name = self.combo_subclass.get()
+        lvl = int(self.combo_level.get() or 1)
+        prof = Character55eRules.get_proficiency_bonus(lvl)
 
-            langs = ", ".join(self.builder_state.get("language_choices", ["Común"]))
-            insts = ", ".join(self.builder_state.get("instrument_choices", []))
-            cantrips = ", ".join(self.builder_state.get("selected_cantrips", []))
-            spells = ", ".join(self.builder_state.get("selected_spells", []))
-            always_prep = Character55eRules.get_always_prepared_spells(c_name, sub_name, lvl)
-            slots_dict = Character55eRules.get_spell_slots_by_level(c_name, sub_name, lvl)
-            prog_choices = self.builder_state.get("level_progression_choices", {})
+        langs = ", ".join(self.builder_state.get("language_choices", ["Común"]))
+        insts = ", ".join(self.builder_state.get("instrument_choices", []))
+        cantrips = ", ".join(self.builder_state.get("selected_cantrips", []))
+        spells = ", ".join(self.builder_state.get("selected_spells", []))
+        always_prep = Character55eRules.get_always_prepared_spells(c_name, sub_name, lvl, self.edition)
+        slots_dict = Character55eRules.get_spell_slots_by_level(c_name, sub_name, lvl, self.edition)
+        prog_choices = self.builder_state.get("level_progression_choices", {})
 
-            lines = [
-                f"=== RESUMEN DE ORIGEN Y PROGRESIÓN ({c_name.upper()} NIVEL {lvl}) ===",
-                f"• Idiomas: {langs}",
-                f"• Dote de Origen: {self.entry_origin_feat.get()}"
-            ]
-            if self.builder_state.get("species_lineage"):
-                lines.append(f"• Linaje de {sp_name}: {self.builder_state['species_lineage']}")
-            if insts:
-                lines.append(f"• Instrumentos Musicales: {insts}")
-            if self.builder_state.get("expertise_skills"):
-                lines.append(f"• Pericia (Doble Competencia ★★): {', '.join(self.builder_state['expertise_skills'])}")
+        lines = [
+            f"=== RESUMEN DE ORIGEN Y PROGRESIÓN ({c_name.upper()} NIVEL {lvl} - {self.edition}) ===",
+            f"• Idiomas: {langs}"
+        ]
+        if self.edition == "5.5e":
+            lines.append(f"• Dote de Origen: {self.entry_origin_feat.get()}")
+        else:
+            if self.entry_origin_feat.get().strip():
+                lines.append(f"• Dote / Rasgo de Trasfondo: {self.entry_origin_feat.get()}")
 
-            # Mostrar Espacios de Conjuro, CD de Salvación y Ataque de Conjuro (Pág. 41)
-            if slots_dict:
-                sp_abil = CLASSES_55E.get(c_name, {}).get("spell_ability") or "Carisma"
-                raw_sc = self.score_vars.get(sp_abil, ctk.StringVar(value="10")).get().strip()
-                sp_mod = Character55eRules.get_modifier(int(raw_sc) if raw_sc.isdigit() else 10)
-                spell_dc = 8 + prof + sp_mod
-                spell_atk = prof + sp_mod
-                slots_str = "  |  ".join([f"Nivel {k}: {v} espacios" for k, v in sorted(slots_dict.items())])
+        if self.builder_state.get("species_lineage"):
+            lines.append(f"• Linaje de {sp_name}: {self.builder_state['species_lineage']}")
+        if insts:
+            lines.append(f"• Instrumentos Musicales: {insts}")
+        if self.builder_state.get("expertise_skills"):
+            lines.append(f"• Pericia (Doble Competencia): {', '.join(self.builder_state['expertise_skills'])}")
 
-                lines.append(f"\n=== LANZAMIENTO DE CONJUROS (Aptitud: {sp_abil} | CD Salvación: {spell_dc} | Ataque Mágico: +{spell_atk}) ===")
-                lines.append(f"• Espacios de Conjuro por Nivel: {slots_str}")
-                if cantrips:
-                    lines.append(f"• Trucos Conocidos: {cantrips}")
-                if always_prep:
-                    lines.append(f"• Conjuros Siempre Preparados (Clase/Subclase): {', '.join(always_prep)}")
-                if spells:
-                    lines.append(f"• Conjuros Preparados de tu Lista: {spells}")
+        if slots_dict:
+            sp_abil = CLASSES_55E.get(c_name, {}).get("spell_ability") or "Carisma"
+            raw_sc = self.score_vars.get(sp_abil, ctk.StringVar(value="10")).get().strip()
+            if raw_sc.isdigit():
+                sp_score = int(raw_sc)
+            else:
+                sp_score = 10
+            sp_mod = Character55eRules.get_modifier(sp_score)
+            spell_dc = 8 + prof + sp_mod
+            spell_atk = prof + sp_mod
+            slots_str = "  |  ".join([f"Nivel {k}: {v} espacios" for k, v in sorted(slots_dict.items())])
 
-            # Mostrar elecciones hechas nivel por nivel
-            if prog_choices:
-                lines.append("\n=== DECISIONES TOMADAS POR NIVEL (SHARD BUILDER) ===")
-                for k, val in prog_choices.items():
-                    if val and val not in ("Ninguno", "Ninguna"):
-                        lines.append(f"• [{k.upper()}]: {val}")
+            lines.append(f"\n=== LANZAMIENTO DE CONJUROS (Aptitud: {sp_abil} | CD Salvación: {spell_dc} | Ataque Mágico: +{spell_atk}) ===")
+            lines.append(f"• Espacios de Conjuro por Nivel: {slots_str}")
+            if cantrips:
+                lines.append(f"• Trucos Conocidos: {cantrips}")
+            if always_prep:
+                lines.append(f"• Conjuros Siempre Preparados (Clase/Subclase): {', '.join(always_prep)}")
+            if spells:
+                lines.append(f"• Conjuros Preparados de tu Lista: {spells}")
 
+        if prog_choices:
+            lines.append("\n=== DECISIONES TOMADAS POR NIVEL (SHARD BUILDER) ===")
+            for k, val in prog_choices.items():
+                if val and val not in ("Ninguno", "Ninguna"):
+                    lines.append(f"• [{k.upper()}]: {val}")
+
+        if self.edition == "5e":
+            lines.append("\n=== RASGOS DE RAZA, CLASE Y SUBCLASE DESBLOQUEADOS HASTA TU NIVEL ===")
+        else:
             lines.append("\n=== RASGOS DE ESPECIE, CLASE Y SUBCLASE DESBLOQUEADOS HASTA TU NIVEL ===")
-            features = Character55eRules.get_features_up_to_level(sp_name, c_name, sub_name, lvl)
-            for title, desc in features:
-                lines.append(f"▸ {title}:\n   {desc}")
 
-            self.txt_features.delete("1.0", "end")
-            self.txt_features.insert("1.0", "\n".join(lines))
+        features = Character55eRules.get_features_up_to_level(sp_name, c_name, sub_name, lvl, self.edition, self.builder_state.get("species_lineage", ""))
+        for title, desc in features:
+            lines.append(f"▸ {title}:\n   {desc}")
+
+        self.txt_features.delete("1.0", "end")
+        self.txt_features.insert("1.0", "\n".join(lines))
 
     def _on_species_change(self, sp_name: str):
-        sp_info = SPECIES_55E.get(sp_name, {"speed": "9 m"})
-        self._set_entry(self.entry_speed, sp_info["speed"])
+        species_catalog = Character55eRules.get_species_catalog(self.edition)
+        sp_info = species_catalog.get(sp_name, {"speed": "9 m"})
+        speed_txt = Character55eRules.format_distance_for_edition(sp_info["speed"], self.edition)
+        self._set_entry(self.entry_speed, speed_txt)
         self._update_features_display()
         self._recalculate_all()
 
     def _on_background_change(self, bg_name: str):
-        bg_info = BACKGROUNDS_55E.get(bg_name, {})
-        suggested_feat = bg_info.get("feat", "")
-        if suggested_feat:
-            self._set_entry(self.entry_origin_feat, suggested_feat)
+        bg_cat = Character55eRules.get_backgrounds_catalog(self.edition)
+        bg_info = bg_cat.get(bg_name, {})
+        if self.edition == "5e":
+            self._set_entry(self.entry_origin_feat, bg_info.get("feature", ""))
+        else:
+            self._set_entry(self.entry_origin_feat, bg_info.get("feat", ""))
         self._update_features_display()
 
     def _on_class_change(self, class_name: str):
         lvl = int(self.combo_level.get() or 1)
-        c_info = CLASSES_55E.get(class_name, CLASSES_55E["Bardo"])
+        classes_cat = Character55eRules.get_classes_catalog(self.edition)
+        c_info = classes_cat.get(class_name, classes_cat["Guerrero"])
+        unlock_lvl = Character55eRules.get_subclass_unlock_level(class_name, self.edition)
 
-        if lvl >= 3:
+        if lvl >= unlock_lvl:
             subs = c_info.get("subclasses", ["Subclase Estándar"])
             self.combo_subclass.configure(values=subs)
             if self.combo_subclass.get() not in subs:
                 self.combo_subclass.set(subs[0])
         else:
-            self.combo_subclass.configure(values=["Se elige en Nivel 3"])
-            self.combo_subclass.set("Se elige en Nivel 3")
+            msg = f"Se elige en Nivel {unlock_lvl}"
+            self.combo_subclass.configure(values=[msg])
+            self.combo_subclass.set(msg)
 
         self._update_features_display()
         self._recalculate_all()
@@ -2021,8 +2349,12 @@ class CharacterSheetView(ctk.CTkFrame):
             text=f"Percepción Pasiva: {p_perc} | Perspicacia: {p_ins} | Investigación: {p_inv}"
         )
 
+        classes_cat = Character55eRules.get_classes_catalog(self.edition)
+        sp_abil = classes_cat.get(char_class, {}).get("spell_ability") or "Carisma"
+        sp_mod = mods.get(sp_abil, 0)
+
         c_max = Character55eRules.get_cantrips_max(char_class, level, prog_order)
-        s_max = Character55eRules.get_prepared_spells_max(char_class, level)
+        s_max = Character55eRules.get_prepared_spells_max(char_class, level, self.edition, sp_mod)
         c_cur = len(self.builder_state.get("selected_cantrips", []))
         s_cur = len(self.builder_state.get("selected_spells", []))
         if c_max > 0 or s_max > 0:
@@ -2040,8 +2372,11 @@ class CharacterSheetView(ctk.CTkFrame):
             w["atk_label"].configure(
                 text=f"Atq: {Character55eRules.format_mod(atk_bonus)} | Daño: {Character55eRules.format_mod(ab_mod)}"
             )
-            mast_name = w["mastery"].get()
-            w["desc_label"].configure(text=WEAPON_MASTERIES_55E.get(mast_name, ""))
+            if self.edition == "5e":
+                w["desc_label"].configure(text="Sin Maestrías de Armas en 5e (2014).")
+            else:
+                mast_name = w["mastery"].get()
+                w["desc_label"].configure(text=WEAPON_MASTERIES_55E.get(mast_name, ""))
 
         if hasattr(self, "scroll_char_inv"):
             self._refresh_inventory_views()
@@ -2067,6 +2402,11 @@ class CharacterSheetView(ctk.CTkFrame):
 
         stats = dict(self.builder_state)
         stats.update({
+            "death_saves": {
+                "successes": sum(1 for v in self.death_succ_vars if v.get()),
+                "failures": sum(1 for v in self.death_fail_vars if v.get())
+            },
+            "edition": self.edition,
             "scores": {ab: int(self.score_vars[ab].get() or 10) for ab in ABILITIES},
             "saving_throws_prof": {ab: self.save_prof_vars[ab].get() for ab in ABILITIES},
             "skills_prof": {sk[0]: self.skill_prof_vars[sk[0]].get() for sk in SKILLS_55E},
@@ -2167,6 +2507,14 @@ class CharacterSheetView(ctk.CTkFrame):
 
         self._update_features_display()
         self._refresh_inventory_views()
+        self._set_entry(self.entry_speed, Character55eRules.format_distance_for_edition(self.entry_speed.get(), self.edition))
+        ds = stats.get("death_saves", {"successes": 0, "failures": 0})
+        ds_succ = int(ds.get("successes", 0))
+        ds_fail = int(ds.get("failures", 0))
+        for i in range(3):
+            self.death_succ_vars[i].set(i < ds_succ)
+            self.death_fail_vars[i].set(i < ds_fail)
+        self._refresh_portrait_preview()
         self._recalculate_all()
 
         attuned = stats.get("attuned_items", ["", "", ""])
@@ -2180,6 +2528,13 @@ class CharacterSheetView(ctk.CTkFrame):
         entry_widget.insert(0, text)
 
     def _load_default_blank(self):
+        stats_blank = Character55eRules.default_stats_payload()
+        stats_blank["edition"] = self.edition
+        if self.edition == "5e":
+            stats_blank["speed"] = "30 pies"
+        else:
+            stats_blank["speed"] = "9 m"
+
         blank = {
             "id": None,
             "name": "",
@@ -2189,10 +2544,9 @@ class CharacterSheetView(ctk.CTkFrame):
             "char_class": "Guerrero",
             "subclass": "Se elige en Nivel 3",
             "level": 1,
-            "stats": Character55eRules.default_stats_payload()
+            "stats": stats_blank
         }
         self._populate_form(blank)
-        # Dejar Dote de Origen vacía hasta que el jugador elija su Trasfondo u Opciones Shard
         self._set_entry(self.entry_origin_feat, "")
         self._set_entry(self.entry_hp_max, "10")
         self._set_entry(self.entry_hp_curr, "10")
@@ -2217,9 +2571,9 @@ class CharacterSheetView(ctk.CTkFrame):
         for w in self.char_list_scroll.winfo_children():
             w.destroy()
 
-        chars = self.db.get_all_characters()
+        chars = self.db.get_all_characters(self.edition)
         if not chars:
-            ctk.CTkLabel(self.char_list_scroll, text="Sin personajes aún.").pack(pady=10)
+            ctk.CTkLabel(self.char_list_scroll, text=f"Sin personajes de {self.edition} aún.").pack(pady=10)
             return
 
         for c in chars:
@@ -2273,3 +2627,134 @@ class CharacterSheetView(ctk.CTkFrame):
         self.builder_state["attuned_items"] = [
             x if x != "-- Ranura Libre --" else "" for x in current_list
         ]
+
+    def set_edition(self, edition: str):
+        self.edition = edition
+
+        species_list = list(Character55eRules.get_species_catalog(edition).keys())
+        self.combo_species.configure(values=species_list)
+        if self.combo_species.get() not in species_list:
+            self.combo_species.set(species_list[0])
+
+        bg_list = list(Character55eRules.get_backgrounds_catalog(edition).keys())
+        self.combo_bg.configure(values=bg_list)
+        if self.combo_bg.get() not in bg_list:
+            self.combo_bg.set(bg_list[0])
+
+        armors_list = list(Character55eRules.get_armors_catalog(edition).keys())
+        self.combo_armor.configure(values=armors_list)
+        if self.combo_armor.get() not in armors_list:
+            self.combo_armor.set(armors_list[0])
+
+        mounts_list = list(Character55eRules.get_mounts_catalog(edition).keys())
+        self.combo_mount.configure(values=mounts_list)
+        if self.combo_mount.get() not in mounts_list:
+            self.combo_mount.set(mounts_list[0])
+
+        weapons_list = list(Character55eRules.get_weapons_catalog(edition).keys())
+
+        if edition == "5e":
+            self.lbl_sidebar_heroes.configure(text="Héroes 5e")
+            self.lbl_species.configure(text="Raza (5e)")
+            self.lbl_bg.configure(text="Trasfondo (5e)")
+            self.lbl_subclass.configure(text="Subclase (5e)")
+            self.lbl_origin_feat.configure(text="Rasgo de Trasfondo (5e)")
+            self.chk_inspiration.configure(text="Inspiración (5e)")
+            self.lbl_speed.configure(text="Velocidad (pies)")
+            self.lbl_weapons_header.configure(text="Armas Equipadas (Catálogo 5e)")
+        else:
+            self.lbl_sidebar_heroes.configure(text="Héroes 5.5e")
+            self.lbl_species.configure(text="Especie (5.5e)")
+            self.lbl_bg.configure(text="Trasfondo (2024)")
+            self.lbl_subclass.configure(text="Subclase (Niv. 3+)")
+            self.lbl_origin_feat.configure(text="Dote de Origen (Origin Feat)")
+            self.chk_inspiration.configure(text="Inspiración Heroica (5.5e)")
+            self.lbl_speed.configure(text="Velocidad (m)")
+            self.lbl_weapons_header.configure(text="Armas Equipadas (Autocompletado 5.5e)")
+
+        self._on_species_change(self.combo_species.get())
+        self._on_background_change(self.combo_bg.get())
+
+        for w in self.weapon_widgets:
+            w["name"].configure(values=weapons_list)
+            if w["name"].get() not in weapons_list:
+                w["name"].set("-- Seleccionar Arma --")
+            curr_dmg = w["damage"].get().strip()
+            if curr_dmg:
+                w_dmg = Character55eRules.format_distance_for_edition(curr_dmg, edition)
+                self._set_entry(w["damage"], w_dmg)
+            if edition == "5e":
+                w["mastery"].set("Ninguna")
+                w["mastery"].configure(state="disabled")
+                w["desc_label"].configure(text="Sin Maestrías de Armas en 5e (2014).")
+            else:
+                w["mastery"].configure(state="normal")
+                w["desc_label"].configure(text=WEAPON_MASTERIES_55E.get(w["mastery"].get(), ""))
+
+        self._refresh_character_list()
+        if self.current_char_id is not None:
+            current_edition = self.builder_state.get("edition", "5.5e")
+            if current_edition != edition:
+                self._load_default_blank()
+                return
+        self._on_class_change(self.combo_class.get())
+
+    def _select_portrait_image(self):
+        path = filedialog.askopenfilename(
+            title="Selecciona el retrato de tu personaje",
+            filetypes=[("Imágenes", "*.png *.jpg *.jpeg *.webp *.bmp")]
+        )
+        if not path:
+            return
+        try:
+            img = Image.open(path).convert("RGB")
+            img.thumbnail((420, 420))
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=85)
+            self.builder_state["portrait_b64"] = base64.b64encode(buf.getvalue()).decode("utf-8")
+            self._refresh_portrait_preview()
+        except Exception as err:
+            messagebox.showerror("Error con la imagen", str(err))
+
+    def _clear_portrait_image(self):
+        self.builder_state["portrait_b64"] = ""
+        self._refresh_portrait_preview()
+
+    def _refresh_portrait_preview(self):
+        b64_str = self.builder_state.get("portrait_b64", "")
+        if not b64_str:
+            if hasattr(self.lbl_portrait_img, "_label"):
+                self.lbl_portrait_img._label.configure(image="")
+            self.lbl_portrait_img.configure(image=None, text="Sin\nRetrato")
+            self.portrait_ctk_img = None
+            return
+        try:
+            img_bytes = base64.b64decode(b64_str)
+            pil_img = Image.open(io.BytesIO(img_bytes))
+            new_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(108, 108))
+            if hasattr(self.lbl_portrait_img, "_label"):
+                self.lbl_portrait_img._label.configure(image="")
+            self.lbl_portrait_img.configure(image=new_img, text="")
+            self.portrait_ctk_img = new_img
+        except Exception:
+            if hasattr(self.lbl_portrait_img, "_label"):
+                self.lbl_portrait_img._label.configure(image="")
+            self.lbl_portrait_img.configure(image=None, text="Sin\nRetrato")
+            self.portrait_ctk_img = None
+
+    def _export_sheet_pdf(self):
+        data = self._collect_form_data()
+        safe_name = data["name"].replace(" ", "_")
+        path = filedialog.asksaveasfilename(
+            defaultextension=".pdf",
+            initialfile=f"{safe_name}_Hoja_{self.edition}.pdf",
+            filetypes=[("Archivo PDF", "*.pdf")]
+        )
+        if not path:
+            return
+        try:
+            CharacterSheetPDFExporter.export_to_pdf(data, path, self.edition)
+            if messagebox.askyesno("PDF Generado", f"Hoja guardada en:\n{path}\n\n¿Deseas abrir el PDF ahora para imprimirlo?"):
+                os.startfile(path)
+        except Exception as err:
+            messagebox.showerror("Error al generar PDF", str(err))

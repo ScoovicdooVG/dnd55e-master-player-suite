@@ -1,14 +1,12 @@
 import base64
 import io
 import random
+import tkinter as tk
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 from PIL import Image
-import random
-import customtkinter as ctk
-from tkinter import messagebox
 from database.db_manager import DatabaseManager
-from models.character_55e import ABILITIES
+from models.character_55e import ABILITIES, Character55eRules
 from models.monster_55e import (
     Monster55eRules, CR_TABLE_55E, CONDITIONS_55E, PRESET_MONSTERS_55E
 )
@@ -50,6 +48,7 @@ class DMToolsView(ctk.CTkFrame):
     def __init__(self, master, db: DatabaseManager):
         super().__init__(master, fg_color="transparent")
         self.db = db
+        self.edition = self.db.get_active_edition()
         self.db.ensure_dm_adventure_tables()
 
         # Estado del Rastreador de Combate
@@ -86,8 +85,8 @@ class DMToolsView(ctk.CTkFrame):
 
         self.tab_campaign = self.tabs.add("Carpetas de Aventura y Encuentros")
         self.tab_combat = self.tabs.add("Rastreador de Combate Activo")
-        self.tab_forge = self.tabs.add("Fragua de Monstruos 5.5e (Metros)")
-        self.tab_ref = self.tabs.add("Referencia Rápida y Exploración (Cap. 1)")
+        self.tab_forge = self.tabs.add("Fragua de Monstruos (Bestiario)")
+        self.tab_ref = self.tabs.add("Referencia Rápida y Exploración")
 
         self._build_campaign_folders_tab()
         self._build_combat_tab()
@@ -98,14 +97,18 @@ class DMToolsView(ctk.CTkFrame):
     # PESTAÑA 1: CARPETAS DE AVENTURA DESPLEGABLES + ENCUENTROS PRE-ARMADOS + BOTÍN
     # =========================================================================
     def _build_campaign_folders_tab(self):
-        self.tab_campaign.grid_columnconfigure(1, weight=3)
-        self.tab_campaign.grid_columnconfigure(2, weight=2)
+        self.tab_campaign.grid_columnconfigure(0, weight=1)
         self.tab_campaign.grid_rowconfigure(0, weight=1)
 
+        # Contenedor con divisores arrastrables entre las 3 columnas
+        self.campaign_paned = tk.PanedWindow(
+            self.tab_campaign, orient="horizontal",
+            sashwidth=6, bg="#0F172A", bd=0, sashrelief="flat", opaqueresize=True
+        )
+        self.campaign_paned.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
+
         # --- COLUMNA IZQUIERDA: ÁRBOL DE CARPETAS DE AVENTURA DESPLEGABLES (▼ / ▶) ---
-        sidebar = ctk.CTkFrame(self.tab_campaign, width=285)
-        sidebar.grid(row=0, column=0, sticky="nsew", padx=(4, 6), pady=4)
-        sidebar.grid_propagate(False)
+        sidebar = ctk.CTkFrame(self.campaign_paned)
         sidebar.grid_columnconfigure(0, weight=1)
         sidebar.grid_rowconfigure(3, weight=1)
 
@@ -139,8 +142,7 @@ class DMToolsView(ctk.CTkFrame):
         self.folders_tree_scroll.grid(row=3, column=0, padx=8, pady=6, sticky="nsew")
 
         # --- COLUMNA CENTRAL: EDITOR DE NOTA / PNJ / LUGAR DE LA CARPETA ACTIVA ---
-        editor = ctk.CTkFrame(self.tab_campaign)
-        editor.grid(row=0, column=1, sticky="nsew", padx=4, pady=4)
+        editor = ctk.CTkFrame(self.campaign_paned)
         editor.grid_columnconfigure(0, weight=1)
         editor.grid_rowconfigure(2, weight=1)
 
@@ -176,12 +178,16 @@ class DMToolsView(ctk.CTkFrame):
         ctk.CTkButton(title_row, text="Guardar Nota", width=110, fg_color="#2563EB", command=self._save_campaign_note).grid(row=0, column=1, padx=3)
         ctk.CTkButton(title_row, text="Eliminar", width=75, fg_color="#8B2635", command=self._delete_campaign_note).grid(row=0, column=2, padx=(3, 0))
 
+        ctk.CTkButton(
+            title_row, text="PNJ Aleatorio", width=105, fg_color="#6D28D9", hover_color="#5B21B6",
+            command=self._generate_random_npc
+        ).grid(row=0, column=3, padx=(6, 0))
+
         self.txt_note_content = ctk.CTkTextbox(editor, font=("Segoe UI", 13))
         self.txt_note_content.grid(row=2, column=0, sticky="nsew", padx=8, pady=(4, 8))
 
         # --- COLUMNA DERECHA: CONSTRUCTOR DE ENCUENTROS DE LA AVENTURA + ENTREGADOR DE BOTÍN ---
-        right_panel = ctk.CTkFrame(self.tab_campaign)
-        right_panel.grid(row=0, column=2, sticky="nsew", padx=(4, 4), pady=4)
+        right_panel = ctk.CTkFrame(self.campaign_paned)
         right_panel.grid_columnconfigure(0, weight=1)
 
         # Bloque 1: Pre-armar Encuentro para esta Carpeta de Aventura
@@ -268,9 +274,6 @@ class DMToolsView(ctk.CTkFrame):
             command=self._send_loot_to_player
         ).pack(fill="x", padx=10, pady=(6, 10))
 
-        self._refresh_adventure_tree()
-        self._new_campaign_note()
-
         # Bloque 3: Controlador de Tienda / Taberna en Vivo para los Celulares
         shop_box = ctk.CTkFrame(right_panel, fg_color="#1E1B4B")
         shop_box.pack(fill="x", padx=8, pady=6)
@@ -306,26 +309,33 @@ class DMToolsView(ctk.CTkFrame):
         self.combo_shop_preset.pack(fill="x", padx=10, pady=3)
 
         mult_row = ctk.CTkFrame(shop_box, fg_color="transparent")
-        mult_row.pack(fill="x", padx=10, pady=(3, 8))
+        mult_row.pack(fill="x", padx=10, pady=(3, 4))
         ctk.CTkLabel(mult_row, text="Precios:", font=("Segoe UI", 11, "bold")).pack(side="left")
 
         self.combo_shop_mult = ctk.CTkComboBox(
             mult_row,
-            values=["50% ( Aliado / Rebaja )", "100% ( Precio Oficial Manual )", "150% ( Caro / Escasez )", "200% ( Doble Precio )"],
-            width=165
+            values=["50% ( Aliado / Rebaja )", "100% ( Precio Oficial Manual )", "150% ( Caro / Escasez )", "200% ( Doble Precio )"]
         )
         self.combo_shop_mult.set("100% ( Precio Oficial Manual )")
-        self.combo_shop_mult.pack(side="left", padx=6)
+        self.combo_shop_mult.pack(side="left", fill="x", expand=True, padx=(6, 0))
 
         ctk.CTkButton(
-            mult_row, text="Actualizar Tienda", height=26, fg_color="#6D28D9",
+            shop_box, text="Actualizar Tienda", height=28, fg_color="#6D28D9",
             command=self._save_dm_shop_settings
-        ).pack(side="right", fill="x", expand=True)
+        ).pack(fill="x", padx=10, pady=(2, 8))
+
+        # Registrar las 3 columnas en el PanedWindow con anchos ajustables
+        self.campaign_paned.add(sidebar, minsize=220, width=300, stretch="never")
+        self.campaign_paned.add(editor, minsize=340, stretch="always")
+        self.campaign_paned.add(right_panel, minsize=280, width=340, stretch="never")
+
+        self._refresh_adventure_tree()
+        self._new_campaign_note()
 
     def _get_party_char_options(self) -> list:
-        chars = self.db.get_all_characters()
+        chars = self.db.get_all_characters(self.edition)
         if not chars:
-            return ["Sin Héroes Guardados"]
+            return [f"Sin Héroes de {self.edition}"]
         return [f"{c['id']}: {c['name']} ({c['char_class']} Niv.{c['level']})" for c in chars]
 
     def _roll_random_trinket(self):
@@ -336,24 +346,29 @@ class DMToolsView(ctk.CTkFrame):
     def _send_loot_to_player(self):
         sel = self.combo_loot_char.get()
         if ":" not in sel:
-            messagebox.showwarning("Sin Héroe", "Primero guarda al menos un personaje en 'Personajes 5.5e'.")
+            messagebox.showwarning("Sin Héroe", f"Primero guarda al menos un personaje de {self.edition}.")
             return
         char_id = int(sel.split(":")[0])
         item_name = self.entry_loot_item.get().strip()
         try:
-            kg = float(self.entry_loot_kg.get().replace(",", ".").strip() or 0.0)
+            raw_weight = float(self.entry_loot_kg.get().replace(",", ".").strip() or 0.0)
             gp = int(self.entry_loot_gp.get().strip() or 0)
         except ValueError:
-            messagebox.showwarning("Dato inválido", "Verifica el peso en kg y la cantidad de monedas de oro.")
+            messagebox.showwarning("Dato inválido", "Verifica el peso y la cantidad de monedas de oro.")
             return
 
         if not item_name and gp == 0:
             return
 
+        if self.edition == "5e":
+            kg = round(raw_weight / 2.0, 3)
+        else:
+            kg = raw_weight
+
         self.db.give_loot_to_character(char_id, item_name, 1, kg, gp)
         self.entry_loot_item.delete(0, "end")
         self._set_entry(self.entry_loot_gp, "0")
-        messagebox.showinfo("Botín Entregado", f"¡Se envió el botín directamente a la hoja de {sel.split(':')[1].strip()}!")
+        messagebox.showinfo("Botín Entregado", f"Se envió el botín a la hoja de {sel.split(':')[1].strip()}.")
 
     # --- LÓGICA DE CARPETAS DE AVENTURA DESPLEGABLES ---
     def _create_new_adventure_folder(self):
@@ -415,20 +430,22 @@ class DMToolsView(ctk.CTkFrame):
             header_row = ctk.CTkFrame(folder_card, fg_color="transparent")
             header_row.pack(fill="x", padx=4, pady=3)
 
+            # Botón de borrar primero a la derecha para que nunca lo empuje un título largo
+            ctk.CTkButton(
+                header_row, text="✕", width=26, height=26, fg_color="#7F1D1D",
+                command=lambda i=aid, nm=adv["name"]: self._delete_adv_folder(i, nm)
+            ).pack(side="right", padx=(4, 2))
+
             arrow = "▼" if is_exp else "▶"
             btn_folder = ctk.CTkButton(
                 header_row,
                 text=f"{arrow} 📁 {adv['name']} ({len(notes)}N | {len(encounters)}E)",
-                anchor="w", fg_color="#334155" if aid == self.current_adventure_id else "#1E293B",
+                anchor="w", width=10,
+                fg_color="#334155" if aid == self.current_adventure_id else "#1E293B",
                 hover_color="#475569", height=28, font=("Segoe UI", 12, "bold"),
                 command=lambda i=aid, ex=is_exp: self._toggle_adv_folder(i, ex)
             )
-            btn_folder.pack(side="left", fill="x", expand=True, padx=(2, 4))
-
-            ctk.CTkButton(
-                header_row, text="✕", width=24, height=24, fg_color="#7F1D1D",
-                command=lambda i=aid, nm=adv["name"]: self._delete_adv_folder(i, nm)
-            ).pack(side="right", padx=2)
+            btn_folder.pack(side="left", fill="x", expand=True, padx=(2, 2))
 
             if is_exp:
                 sub_box = ctk.CTkFrame(folder_card, fg_color="#0F172A")
@@ -447,33 +464,33 @@ class DMToolsView(ctk.CTkFrame):
                     btn_n = ctk.CTkButton(
                         sub_box,
                         text=f"↳ [{n['category']}{att_tag}] {n['title']}",
-                        anchor="w", fg_color="transparent", hover_color="#1E293B",
+                        anchor="w", width=10, fg_color="transparent", hover_color="#1E293B",
                         height=24, font=("Segoe UI", 11), text_color="#E2E8F0",
                         command=lambda item=n: self._load_note_into_editor(item)
                     )
                     btn_n.pack(fill="x", padx=4, pady=1)
 
-                # Mostrar Encuentros Pre-armados de esta Aventura con botón directo al Rastreador
+                # Mostrar Encuentros Pre-armados de esta Aventura con botones blindados a la derecha
                 for enc in encounters:
                     e_row = ctk.CTkFrame(sub_box, fg_color="#1E1B4B")
                     e_row.pack(fill="x", padx=4, pady=2)
 
-                    total_m = sum(m.get("qty", 1) for m in enc.get("monsters", []))
-                    ctk.CTkLabel(
-                        e_row, text=f"⚔️ {enc['name']} ({total_m} criat.)",
-                        font=("Segoe UI", 11, "bold"), text_color="#A78BFA"
-                    ).pack(side="left", padx=6, pady=2)
-
                     ctk.CTkButton(
-                        e_row, text="✕", width=22, height=20, fg_color="#7F1D1D",
+                        e_row, text="✕", width=24, height=22, fg_color="#7F1D1D",
                         command=lambda eid=enc["id"]: (self.db.delete_saved_encounter(eid), self._refresh_adventure_tree())
                     ).pack(side="right", padx=2, pady=2)
 
                     ctk.CTkButton(
-                        e_row, text="Lanzar ▶", width=62, height=20, fg_color="#059669",
+                        e_row, text="Lanzar ▶", width=62, height=22, fg_color="#059669",
                         font=("Segoe UI", 10, "bold"),
                         command=lambda e_obj=enc: self._launch_preset_encounter_to_combat(e_obj)
                     ).pack(side="right", padx=2, pady=2)
+
+                    total_m = sum(m.get("qty", 1) for m in enc.get("monsters", []))
+                    ctk.CTkLabel(
+                        e_row, text=f"⚔️ {enc['name']} ({total_m} criat.)",
+                        anchor="w", font=("Segoe UI", 11, "bold"), text_color="#A78BFA"
+                    ).pack(side="left", fill="x", expand=True, padx=6, pady=2)
 
     # --- LÓGICA DEL CONSTRUCTOR DE ENCUENTROS Y DIFICULTAD 5.5e ---
     def _stage_monster_for_preset(self):
@@ -503,7 +520,7 @@ class DMToolsView(ctk.CTkFrame):
         self.txt_staged_list.insert("1.0", "\n".join(lines) if lines else "Añade criaturas arriba para pre-armar el encuentro.")
 
         # Calcular dificultad según el grupo guardado
-        chars = self.db.get_all_characters()
+        chars = self.db.get_all_characters(self.edition)
         if not chars:
             self.lbl_enc_difficulty.configure(text=f"Total Encuentro: {total_xp:,} XP")
             return
@@ -764,11 +781,13 @@ class DMToolsView(ctk.CTkFrame):
         )
 
     def _get_monster_names_list(self) -> list:
-        monsters = self.db.get_all_monsters()
-        return [m["name"] for m in monsters] if monsters else ["Goblin Guerrero"]
+        monsters = self.db.get_all_monsters(self.edition)
+        if monsters:
+            return [m["name"] for m in monsters]
+        return [f"Sin monstruos de {self.edition}"]
 
     def _add_party_characters_to_combat(self, silent=False):
-        chars = self.db.get_all_characters()
+        chars = self.db.get_all_characters(self.edition)
         if not chars:
             if not silent:
                 messagebox.showinfo("Sin personajes", "Aún no hay personajes guardados en 'Personajes 5.5e'.")
@@ -917,6 +936,12 @@ class DMToolsView(ctk.CTkFrame):
             cb_cond.pack(side="left", padx=6)
 
             ctk.CTkButton(
+                row, text="?", width=24, height=24, fg_color="#2B4C7E", hover_color="#1E3A8A",
+                font=("Segoe UI", 11, "bold"),
+                command=lambda comb=c: self._show_condition_popup(comb.get("condition", "Sin Estado"))
+            ).pack(side="left", padx=(0, 4))
+
+            ctk.CTkButton(
                 row, text="✕", width=26, height=24, fg_color="#374151",
                 command=lambda i=idx: self._remove_combatant(i)
             ).pack(side="right", padx=6)
@@ -925,12 +950,12 @@ class DMToolsView(ctk.CTkFrame):
         raw = entry_widget.get().strip()
         if not raw.isdigit():
             return
-        amount = int(raw) * sign
+        dmg_value = int(raw)
+        amount = dmg_value * sign
         c = self.combatants[idx]
         old_hp = c["hp_curr"]
         c["hp_curr"] = max(0, min(c["hp_max"], old_hp + amount))
 
-        # Si es un PJ, sincronizar también sus PG actuales en la base de datos
         if c["is_player"] and c.get("char_id"):
             ch_db = self.db.get_character_by_id(c["char_id"])
             if ch_db:
@@ -943,6 +968,21 @@ class DMToolsView(ctk.CTkFrame):
 
         entry_widget.delete(0, "end")
         self._render_combat_list()
+
+        if sign < 0 and dmg_value > 0 and c.get("condition") == "Concentración":
+            if c["hp_curr"] == 0:
+                c["condition"] = "Inconsciente"
+                self._render_combat_list()
+                messagebox.showwarning(
+                    "Concentración Rota",
+                    f"{c['name']} cayó a 0 PG y perdió la concentración automáticamente."
+                )
+            else:
+                conc_dc = max(10, dmg_value // 2)
+                messagebox.showwarning(
+                    "Prueba de Concentración",
+                    f"{c['name']} recibió {dmg_value} de daño mientras mantiene Concentración.\n\nDebe superar una Tirada de Salvación de Constitución CD {conc_dc}."
+                )
 
     def _sort_combatants_by_initiative(self):
         if not self.combatants:
@@ -1025,9 +1065,8 @@ class DMToolsView(ctk.CTkFrame):
         sidebar.grid_columnconfigure(0, weight=1)
         sidebar.grid_rowconfigure(3, weight=1)
 
-        ctk.CTkLabel(sidebar, text="Bestiario 5.5e", font=("Segoe UI", 17, "bold")).grid(
-            row=0, column=0, padx=12, pady=(10, 4), sticky="w"
-        )
+        self.lbl_bestiary_title = ctk.CTkLabel(sidebar, text="Bestiario", font=("Segoe UI", 17, "bold"))
+        self.lbl_bestiary_title.grid(row=0, column=0, padx=12, pady=(10, 4), sticky="w")
         ctk.CTkButton(
             sidebar, text="+ Nuevo Monstruo", fg_color="#2E7D32",
             command=self._load_blank_monster
@@ -1159,7 +1198,8 @@ class DMToolsView(ctk.CTkFrame):
         if sb.get("bonus_reactions"):
             lines.append("\n[ACCIONES ADICIONALES / REACCIONES / LEGENDARIAS]")
             lines.append(sb["bonus_reactions"])
-        return "\n".join(lines)
+        full_text = "\n".join(lines)
+        return Character55eRules.format_distance_for_edition(full_text, self.edition)
 
     def _populate_monster_form(self, m: dict):
         self.current_monster_id = m.get("id")
@@ -1190,17 +1230,25 @@ class DMToolsView(ctk.CTkFrame):
         self._recalc_monster_math()
 
     def _load_blank_monster(self):
+        if self.edition == "5e":
+            def_speed = "30 pies"
+            def_senses = "Visión en la oscuridad 60 pies, Percepción pasiva 11"
+        else:
+            def_speed = "9 m"
+            def_senses = "Visión en la oscuridad 18 m, Percepción pasiva 11"
+
         self._populate_monster_form({
             "id": None,
             "name": "",
             "size_type_alignment": "Mediano Monstruosidad, Neutral",
             "armor_class": "14 (Armadura natural)",
             "hit_points": "45 (6d8 + 18)",
-            "speed": "9 m",
+            "speed": def_speed,
             "challenge_rating": "2",
             "statblock": {
+                "edition": self.edition,
                 "scores": {ab: 12 for ab in ABILITIES},
-                "senses": "Visión en la oscuridad 18 m, Percepción pasiva 11",
+                "senses": def_senses,
                 "languages": "Común",
                 "traits": "",
                 "actions": "",
@@ -1209,32 +1257,59 @@ class DMToolsView(ctk.CTkFrame):
         })
 
     def _save_current_monster(self):
-        scores = {ab: int(self.m_score_vars[ab].get().strip() or 10) for ab in ABILITIES}
-        dex_mod = Monster55eRules.get_mod(scores["Destreza"])
-        payload = {
-            "id": self.current_monster_id,
-            "name": self.entry_m_name.get().strip() or "Criatura Sin Nombre",
-            "size_type_alignment": self.entry_m_type.get().strip(),
-            "armor_class": self.entry_m_ac.get().strip(),
-            "hit_points": self.entry_m_hp.get().strip(),
-            "speed": self.entry_m_speed.get().strip(),
-            "initiative_bonus": dex_mod,
-            "challenge_rating": self.combo_m_cr.get(),
-            "statblock": {
-                "scores": scores,
-                "senses": self.entry_m_senses.get().strip(),
-                "languages": self.entry_m_langs.get().strip(),
-                "traits": self.txt_m_traits.get("1.0", "end").strip(),
-                "actions": self.txt_m_actions.get("1.0", "end").strip(),
-                "bonus_reactions": self.txt_m_bonus.get("1.0", "end").strip()
+        try:
+            scores = {}
+            for ab in ABILITIES:
+                raw_val = self.m_score_vars[ab].get().strip()
+                if not raw_val.isdigit():
+                    messagebox.showwarning("Valor inválido", f"La característica {ab} debe ser un número entero válido.")
+                    return
+                scores[ab] = int(raw_val)
+
+            name = self.entry_m_name.get().strip()
+            if not name:
+                messagebox.showwarning("Nombre requerido", "El monstruo debe tener al menos un nombre.")
+                return
+
+            dex_mod = Monster55eRules.get_mod(scores["Destreza"])
+            if self.edition == "5e":
+                default_speed = "30 pies"
+            else:
+                default_speed = "9 m"
+
+            payload = {
+                "id": self.current_monster_id,
+                "name": name,
+                "size_type_alignment": self.entry_m_type.get().strip(),
+                "armor_class": self.entry_m_ac.get().strip() or "12",
+                "hit_points": self.entry_m_hp.get().strip() or "10 (2d8)",
+                "speed": self.entry_m_speed.get().strip() or default_speed,
+                "initiative_bonus": dex_mod,
+                "challenge_rating": self.combo_m_cr.get() or "1/4",
+                "statblock": {
+                    "edition": self.edition,
+                    "scores": scores,
+                    "senses": self.entry_m_senses.get().strip() or "Percepción pasiva 10",
+                    "languages": self.entry_m_langs.get().strip() or "—",
+                    "traits": self.txt_m_traits.get("1.0", "end").strip(),
+                    "actions": self.txt_m_actions.get("1.0", "end").strip(),
+                    "bonus_reactions": self.txt_m_bonus.get("1.0", "end").strip()
+                }
             }
-        }
-        self.current_monster_id = self.db.save_monster(payload)
-        self._refresh_monster_list()
-        m_list = self._get_monster_names_list()
-        self.combo_combat_monster.configure(values=m_list)
-        self.combo_stage_monster.configure(values=m_list)
-        messagebox.showinfo("Bestiario", f"'{payload['name']}' guardado en el Bestiario.")
+
+            self.current_monster_id = self.db.save_monster(payload)
+            self._refresh_monster_list()
+
+            m_list = self._get_monster_names_list()
+            if hasattr(self, "combo_combat_monster"):
+                self.combo_combat_monster.configure(values=m_list)
+            if hasattr(self, "combo_stage_monster"):
+                self.combo_stage_monster.configure(values=m_list)
+
+            messagebox.showinfo("Bestiario", f"'{payload['name']}' guardado correctamente en el Bestiario ({self.edition}).")
+
+        except Exception as err:
+            messagebox.showerror("Error al Guardar", f"Ocurrió un error inesperado al guardar el monstruo:\n{str(err)}")
 
     def _delete_current_monster(self):
         if not self.current_monster_id:
@@ -1251,17 +1326,23 @@ class DMToolsView(ctk.CTkFrame):
         for w in self.monster_list_scroll.winfo_children():
             w.destroy()
 
-        monsters = self.db.get_all_monsters()
+        monsters = self.db.get_all_monsters(self.edition)
         q = ""
         if hasattr(self, "entry_bestiary_filter"):
             q = self.entry_bestiary_filter.get().strip().lower()
 
-        filtered = [
-            m for m in monsters
-            if not q or q in m["name"].lower() or q in m.get("size_type_alignment", "").lower() or q == str(m.get("challenge_rating", "")).lower()
-        ]
+        filtered = []
+        for m in monsters:
+            if not q or q in m["name"].lower() or q in m.get("size_type_alignment", "").lower() or q == str(m.get("challenge_rating", "")).lower():
+                filtered.append(m)
 
-        # Mostrar hasta 60 tarjetas a la vez en el scroll para mantener la interfaz ultrarrápida
+        if not filtered:
+            ctk.CTkLabel(
+                self.monster_list_scroll,
+                text=f"Sin criaturas de {self.edition} aún.",
+                font=("Segoe UI", 11), text_color="#9CA3AF"
+            ).pack(pady=10)
+
         for m in filtered[:60]:
             btn = ctk.CTkButton(
                 self.monster_list_scroll,
@@ -1278,12 +1359,13 @@ class DMToolsView(ctk.CTkFrame):
                 font=("Segoe UI", 10), text_color="#9CA3AF"
             ).pack(pady=4)
 
-        # Actualizar también los desplegables de combate y pre-armado de encuentros
-        names = [m["name"] for m in monsters] if monsters else ["Goblin Guerrero"]
+        names = self._get_monster_names_list()
         if hasattr(self, "combo_combat_monster"):
             self.combo_combat_monster.configure(values=names)
+            self.combo_combat_monster.set(names[0])
         if hasattr(self, "combo_stage_monster"):
             self.combo_stage_monster.configure(values=names)
+            self.combo_stage_monster.set(names[0])
 
     def _search_monster_in_pdf(self):
         q = self.entry_m_pdf_search.get().strip()
@@ -1388,10 +1470,11 @@ class DMToolsView(ctk.CTkFrame):
             "• Cobertura Tres Cuartos (+5 CA y Salv. Destreza): Cubre al menos 3/4 del objetivo.\n"
             "• Cobertura Completa: No puede ser objetivo directo de ataques ni conjuros."
         )
-        ctk.CTkLabel(
-            env_card, text=env_text, font=("Segoe UI", 11),
+        self.lbl_env_text = ctk.CTkLabel(
+            env_card, text="", font=("Segoe UI", 11),
             justify="left", wraplength=560, text_color="#E2E8F0"
-        ).pack(anchor="w", padx=12, pady=(2, 10))
+        )
+        self.lbl_env_text.pack(anchor="w", padx=12, pady=(2, 10))
 
         # --- PANEL INFERIOR COMPLETO: BUSCADOR DE ESTADOS, ACCIONES Y PELIGROS (CAP. 1) ---
         ref_bottom = ctk.CTkFrame(self.tab_ref)
@@ -1432,23 +1515,38 @@ class DMToolsView(ctk.CTkFrame):
         except ValueError:
             hours = 8.0
 
-        if pace.startswith("Rápido"):
-            km_h, m_min = 6.0, 120
-            effect = "Efecto en Juego: DESVENTAJA en Sabiduría (Percepción o Supervivencia) y Destreza (Sigilo)."
-        elif pace.startswith("Lento"):
-            km_h, m_min = 3.0, 60
-            effect = "Efecto en Juego: VENTAJA en pruebas de Sabiduría (Percepción o Supervivencia)."
+        if self.edition == "5e":
+            if pace.startswith("Rápido"):
+                mph, fpm = 4.0, 400
+                effect = "Efecto en Juego: -5 a Percepción Pasiva."
+            elif pace.startswith("Lento"):
+                mph, fpm = 2.0, 200
+                effect = "Efecto en Juego: Puedes usar Sigilo mientras viajas."
+            else:
+                mph, fpm = 3.0, 300
+                effect = "Efecto en Juego: Sin penalizadores."
+            total_dist = hours * mph
+            if self.chk_mounted_gallop.get() and hours >= 1.0:
+                total_dist += mph
+            self.lbl_travel_result.configure(
+                text=f"Distancia Recorrida en {hours:g} h: {total_dist:.1f} millas ({fpm} pies/min)\n{effect}"
+            )
         else:
-            km_h, m_min = 4.5, 90
-            effect = "Efecto en Juego: DESVENTAJA en pruebas de Destreza (Sigilo)."
-
-        total_km = hours * km_h
-        if self.chk_mounted_gallop.get() and hours >= 1.0:
-            total_km += km_h  # 1 hora al doble de velocidad
-
-        self.lbl_travel_result.configure(
-            text=f"Distancia Recorrida en {hours:g} h: {total_km:.1f} km ({m_min} m por minuto)\n{effect}"
-        )
+            if pace.startswith("Rápido"):
+                km_h, m_min = 6.0, 120
+                effect = "Efecto en Juego: DESVENTAJA en Sabiduría (Percepción o Supervivencia) y Destreza (Sigilo)."
+            elif pace.startswith("Lento"):
+                km_h, m_min = 3.0, 60
+                effect = "Efecto en Juego: VENTAJA en pruebas de Sabiduría (Percepción o Supervivencia)."
+            else:
+                km_h, m_min = 4.5, 90
+                effect = "Efecto en Juego: DESVENTAJA en pruebas de Destreza (Sigilo)."
+            total_km = hours * km_h
+            if self.chk_mounted_gallop.get() and hours >= 1.0:
+                total_km += km_h
+            self.lbl_travel_result.configure(
+                text=f"Distancia Recorrida en {hours:g} h: {total_km:.1f} km ({m_min} m/min)\n{effect}"
+            )
 
     def _init_glossary_data(self):
         self.glossary_55e = {
@@ -1569,8 +1667,9 @@ class DMToolsView(ctk.CTkFrame):
             self._show_glossary_entry(first_key, self.glossary_55e[first_key])
 
     def _show_glossary_entry(self, title: str, desc: str):
+        formatted_desc = Character55eRules.format_distance_for_edition(desc, self.edition)
         self.txt_ref_detail.delete("1.0", "end")
-        self.txt_ref_detail.insert("1.0", f"=== {title.upper()} ===\n\n{desc}")
+        self.txt_ref_detail.insert("1.0", f"=== {title.upper()} ===\n\n{formatted_desc}")
 
     def _upload_and_project_handout(self):
         path = filedialog.askopenfilename(
@@ -1603,3 +1702,159 @@ class DMToolsView(ctk.CTkFrame):
 
     def _sync_live_environment(self):
         self.db.update_live_environment(self.combo_lighting.get(), self.combo_pace.get())
+
+    def set_edition(self, edition: str):
+        self.edition = edition
+        self.combo_loot_char.configure(values=self._get_party_char_options())
+        self.combo_loot_char.set(self._get_party_char_options()[0])
+
+        if hasattr(self, "lbl_bestiary_title"):
+            self.lbl_bestiary_title.configure(text=f"Bestiario {edition}")
+
+        if edition == "5e":
+            self.entry_loot_kg.configure(placeholder_text="lb")
+            pace_opts = [
+                "Rápido (400 pies/min | 4 millas/h | 30 millas/día)",
+                "Normal (300 pies/min | 3 millas/h | 24 millas/día)",
+                "Lento (200 pies/min | 2 millas/h | 18 millas/día)"
+            ]
+            env_text = (
+                "• Luz Brillante: Visión normal (antorchas 20 pies, linternas 30 pies).\n"
+                "• Luz Tenue (Ligeramente Oscura): Desventaja en Percepción visual.\n"
+                "• Oscuridad (Muy Oscura): Estado CEGADO al intentar ver.\n"
+                "-------------------------------------------------------------------------\n"
+                "• Cobertura Media (+2 CA y Salv. DES) | Tres Cuartos (+5 CA y Salv. DES) | Completa (sin objetivo directo)."
+            )
+            self.glossary_55e["[Estado] Cansancio / Exhaustion (Regla 2014)"] = (
+                "• Nivel 1: Desventaja en pruebas de característica.\n"
+                "• Nivel 2: Velocidad reducida a la mitad.\n"
+                "• Nivel 3: Desventaja en tiradas de ataque y salvaciones.\n"
+                "• Nivel 4: PG máximos reducidos a la mitad.\n"
+                "• Nivel 5: Velocidad reducida a 0.\n"
+                "• Nivel 6: Muerte.\n"
+                "• Recuperación: Un Descanso Largo reduce el cansancio en 1 nivel (si comiste y bebiste)."
+            )
+            self.glossary_55e.pop("[Estado] Cansancio / Exhaustion (Regla 2024)", None)
+        else:
+            self.entry_loot_kg.configure(placeholder_text="kg")
+            pace_opts = [
+                "Rápido (120 m/min | 6 km/h | 45 km/día)",
+                "Normal (90 m/min | 4,5 km/h | 36 km/día)",
+                "Lento (60 m/min | 3 km/h | 27 km/día)"
+            ]
+            env_text = (
+                "• Luz Brillante: Visión normal (antorchas 6 m, linternas 9 m).\n"
+                "• Luz Tenue (Ligeramente Oscura): Desventaja en Percepción visual.\n"
+                "• Oscuridad (Muy Oscura): Estado CEGADO al intentar ver.\n"
+                "-------------------------------------------------------------------------\n"
+                "• Cobertura Media (+2 CA y Salv. DES) | Tres Cuartos (+5 CA y Salv. DES) | Completa (sin objetivo directo)."
+            )
+            self.glossary_55e["[Estado] Cansancio / Exhaustion (Regla 2024)"] = (
+                "• Niveles de Cansancio (1 a 6): Acumulativo. Al llegar a Nivel 6, mueres.\n"
+                "• Penalizador a Pruebas con d20: Restas 2 veces tu nivel de cansancio al total.\n"
+                "• Velocidad reducida: Tu velocidad se reduce en 1,5 m por nivel de cansancio.\n"
+                "• Recuperación: Finalizar un Descanso Largo reduce tu nivel de cansancio en 1."
+            )
+            self.glossary_55e.pop("[Estado] Cansancio / Exhaustion (Regla 2014)", None)
+
+        self.combo_travel_pace.configure(values=pace_opts)
+        self.combo_travel_pace.set(pace_opts[1])
+        self.combo_pace.configure(values=pace_opts)
+        self.combo_pace.set(pace_opts[1])
+        self.lbl_env_text.configure(text=env_text)
+
+        self._recalc_travel_pace()
+        self._render_quick_ref_glossary()
+        self._update_staged_encounter_preview()
+
+        self._refresh_monster_list()
+        self._load_blank_monster()
+
+    def _generate_random_npc(self):
+        first_names = [
+            "Alden", "Bram", "Caelum", "Daria", "Elara", "Fenris", "Garrick",
+            "Hilda", "Ivor", "Jora", "Kael", "Lira", "Marek", "Nadia",
+            "Orin", "Petra", "Quin", "Rowan", "Soren", "Talia", "Ulric", "Vesper"
+        ]
+        surnames = [
+            "Ceniciento", "Hierrogris", "Valverde", "Ojosombra", "Piedrafría",
+            "Ríoscuro", "Lanzalarga", "Vientonorte", "Robleviejo", "Colmilloblanco",
+            "Brumador", "Corazónfirme"
+        ]
+        if self.edition == "5e":
+            races = ["Humano", "Elfo", "Enano", "Mediano", "Gnomo", "Semielfo", "Semiorco", "Tiefling", "Dracónido"]
+        else:
+            races = ["Humano", "Elfo", "Enano", "Mediano", "Gnomo", "Orco", "Goliat", "Tiefling", "Dracónido", "Aasimar"]
+
+        roles = [
+            "Herrero retirado", "Tabernero parlanchín", "Mercader ambulante",
+            "Guardia de la ciudad", "Erudito distraído", "Cazarrecompensas",
+            "Boticaria misteriosa", "Bardo sin monedas", "Contrabandista local",
+            "Sacerdote de paso", "Minero veterano", "Cartógrafo obsesivo"
+        ]
+        traits = [
+            "Habla siempre en susurros y mira por encima del hombro.",
+            "Se ríe en los momentos más inoportunos.",
+            "Limpia compulsivamente sus herramientas o monedas mientras habla.",
+            "Cambia de tema bruscamente cuando le preguntan por su pasado.",
+            "Tiene una cicatriz llamativa y una historia distinta cada vez que la explica.",
+            "Ofrece té o licor casero de dudosa procedencia a todo el que conoce.",
+            "Anota nombres y deudas en una libreta desgastada.",
+            "Usa proverbios antiguos inventados por él mismo."
+        ]
+        secrets = [
+            "Le debe un favor peligroso al gremio de ladrones local.",
+            "Vio algo extraño en las afueras anoche y tiene miedo de contarlo.",
+            "Oculta un objeto mágico menor que encontró por accidente.",
+            "En realidad está espiando los movimientos del grupo para un tercero.",
+            "Busca a un familiar desaparecido en la zona de la aventura actual.",
+            "Es mucho más hábil en combate de lo que aparenta."
+        ]
+        attitudes = [
+            "Amistoso (Ventaja Influir)",
+            "Indiferente",
+            "Hostil (Desventaja Influir)"
+        ]
+
+        full_name = f"{random.choice(first_names)} {random.choice(surnames)}"
+        race = random.choice(races)
+        role = random.choice(roles)
+        trait = random.choice(traits)
+        secret = random.choice(secrets)
+        attitude = random.choice(attitudes)
+
+        self.current_note_id = None
+        self._set_entry(self.entry_note_title, f"PNJ: {full_name} ({role})")
+        self.combo_note_cat.set("PNJ (NPC)")
+        self.combo_npc_attitude.set(attitude)
+
+        body = (
+            f"Nombre: {full_name}\n"
+            f"Raza / Especie: {race}\n"
+            f"Ocupación: {role}\n"
+            f"Actitud inicial: {attitude}\n\n"
+            f"Rasgo de personalidad:\n- {trait}\n\n"
+            f"Gancho o secreto:\n- {secret}\n"
+        )
+        self.txt_note_content.delete("1.0", "end")
+        self.txt_note_content.insert("1.0", body)
+
+    def _show_condition_popup(self, cond_name: str):
+        if cond_name == "Sin Estado":
+            messagebox.showinfo("Estado", "El combatiente no tiene ningún estado activo.")
+            return
+        if cond_name == "Concentración":
+            messagebox.showinfo(
+                "Concentración",
+                "Al recibir daño, debes superar una salvación de Constitución con CD 10 o la mitad del daño recibido (lo que sea mayor). También se pierde al quedar Incapacitado o lanzar otro conjuro de concentración."
+            )
+            return
+
+        target_lower = cond_name.lower()
+        for title, desc in self.glossary_55e.items():
+            if target_lower in title.lower():
+                formatted = Character55eRules.format_distance_for_edition(desc, self.edition)
+                messagebox.showinfo(title, formatted)
+                return
+
+        messagebox.showinfo(cond_name, f"No hay descripción registrada para '{cond_name}'.")

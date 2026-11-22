@@ -160,15 +160,20 @@ class DatabaseManager:
                 conn.commit()
                 return cursor.lastrowid
 
-    def get_all_characters(self):
+    def get_all_characters(self, edition: str = None):
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT id, name, player_name, species, char_class, level, stats_json FROM characters ORDER BY updated_at DESC")
             rows = []
             for r in cursor.fetchall():
                 d = dict(r)
-                d["stats"] = json.loads(d["stats_json"]) if d.get("stats_json") else {}
-                rows.append(d)
+                if d.get("stats_json"):
+                    d["stats"] = json.loads(d["stats_json"])
+                else:
+                    d["stats"] = {}
+                char_edition = d["stats"].get("edition", "5.5e")
+                if edition is None or char_edition == edition:
+                    rows.append(d)
             return rows
 
     def get_character_by_id(self, char_id: int):
@@ -231,15 +236,20 @@ class DatabaseManager:
                 conn.commit()
                 return cursor.lastrowid
 
-    def get_all_monsters(self):
+    def get_all_monsters(self, edition: str = None):
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM monsters ORDER BY name ASC")
             rows = []
             for r in cursor.fetchall():
                 d = dict(r)
-                d["statblock"] = json.loads(d["statblock_json"]) if d.get("statblock_json") else {}
-                rows.append(d)
+                if d.get("statblock_json"):
+                    d["statblock"] = json.loads(d["statblock_json"])
+                else:
+                    d["statblock"] = {}
+                m_edition = d["statblock"].get("edition", "5.5e")
+                if edition is None or m_edition == edition:
+                    rows.append(d)
             return rows
 
     def delete_monster(self, monster_id: int):
@@ -412,7 +422,7 @@ class DatabaseManager:
             coins["gp"] = max(0, int(coins.get("gp", 0)) + gp_bonus)
         char["stats"] = stats
         self.save_character(char)
-        # --- MÉTODOS DE TIENDA ACTIVA DEL DM Y SINTONIZACIÓN ---
+        # --- MÉTODOS DE TIENDA ACTIVA DEL DM Y SINTONIZACIÓN (CAPÍTULO 6) ---
     def ensure_shop_table(self):
         with self.get_connection() as conn:
             cursor = conn.cursor()
@@ -459,7 +469,7 @@ class DatabaseManager:
             conn.commit()
 
 
-            # --- MÉTODOS DE CATÁLOGO DE CONJUROS EXTRAÍDOS DEL PDF ---
+            # --- MÉTODOS DE CATÁLOGO DE CONJUROS EXTRAÍDOS DEL PDF (CAPÍTULO 7) ---
     def ensure_spells_table(self):
         with self.get_connection() as conn:
             cursor = conn.cursor()
@@ -624,4 +634,34 @@ class DatabaseManager:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("UPDATE dm_live_table SET combat_json=? WHERE id = 1", (payload,))
+            conn.commit()
+
+
+    def ensure_app_settings(self):
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+            """)
+            cursor.execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('edition', '5.5e')")
+            conn.commit()
+
+    def get_active_edition(self) -> str:
+        self.ensure_app_settings()
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT value FROM app_settings WHERE key = 'edition'")
+            row = cursor.fetchone()
+            if row:
+                return row["value"]
+            return "5.5e"
+
+    def set_active_edition(self, edition: str):
+        self.ensure_app_settings()
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE app_settings SET value = ? WHERE key = 'edition'", (edition,))
             conn.commit()

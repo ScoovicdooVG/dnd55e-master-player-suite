@@ -3,6 +3,7 @@ import socket
 import threading
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from models.rules_5e import FIGHTING_STYLES_5E, ELD_INVOCATIONS_5E
 from urllib.parse import urlparse, parse_qs
 from PIL import Image
 import qrcode
@@ -118,6 +119,20 @@ MOBILE_HTML_TEMPLATE = r"""<!DOCTYPE html>
         <label style="margin:0;display:flex;align-items:center;gap:5px;color:var(--gold);">
           <input type="checkbox" id="inspCheck" style="width:18px;height:18px;"> Inspiración Heroica
         </label>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding:6px 8px;background:var(--card-alt);border-radius:8px;border:1px solid var(--border);font-size:0.78rem;">
+        <div style="display:flex;align-items:center;gap:4px;">
+          <span style="color:var(--green);font-weight:bold;">Éxitos:</span>
+          <input type="checkbox" id="ds_s0" onchange="saveCombatAndEquipment()" style="width:16px;height:16px;">
+          <input type="checkbox" id="ds_s1" onchange="saveCombatAndEquipment()" style="width:16px;height:16px;">
+          <input type="checkbox" id="ds_s2" onchange="saveCombatAndEquipment()" style="width:16px;height:16px;">
+        </div>
+        <div style="display:flex;align-items:center;gap:4px;">
+          <span style="color:var(--red);font-weight:bold;">Fallos:</span>
+          <input type="checkbox" id="ds_f0" onchange="saveCombatAndEquipment()" style="width:16px;height:16px;">
+          <input type="checkbox" id="ds_f1" onchange="saveCombatAndEquipment()" style="width:16px;height:16px;">
+          <input type="checkbox" id="ds_f2" onchange="saveCombatAndEquipment()" style="width:16px;height:16px;">
+        </div>
       </div>
 
       <div class="grid-3" style="margin-bottom:8px;">
@@ -411,17 +426,29 @@ let charData = null;
 let catalogs = null;
 let currentShopData = null;
 
+let liveTableInterval = null;
+let lastLiveHandoutB64 = null;
+
 function showTab(tabId, btn) {
   document.querySelectorAll('.tab-pane').forEach(el => el.style.display = 'none');
   document.getElementById(tabId).style.display = 'block';
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
+
+  if (liveTableInterval) {
+    clearInterval(liveTableInterval);
+    liveTableInterval = null;
+  }
+  if (tabId === 'tabLive') {
+    liveTableInterval = setInterval(loadLiveTableMobile, 3500);
+  }
 }
 
 async function initCatalogs() {
   try {
     const res = await fetch('/api/catalogs');
     catalogs = await res.json();
+    document.querySelector('h1 span').textContent = ` D&D ${catalogs.edition} Suite Móvil`;
 
     const fill = (id, arr) => {
       const el = document.getElementById(id);
@@ -503,11 +530,29 @@ function renderAllMobileViews() {
   const d = charData;
   const st = d.stats || {};
 
+  let portraitHtml = '';
+  if (d.portrait_b64) {
+    portraitHtml = `<img src="data:image/jpeg;base64,${d.portrait_b64}" style="width:62px;height:62px;object-fit:cover;border-radius:8px;border:1px solid var(--gold);flex-shrink:0;">`;
+  }
+
   document.getElementById('headerInfo').innerHTML = `
-    <div style="font-size:1.15rem;font-weight:bold;">${d.name} <span style="color:var(--gold);">(Nivel ${d.level})</span></div>
-    <div class="sub-note">${d.species} • ${d.char_class} (${d.subclass}) • Trasfondo: ${d.background}</div>
-    <div class="sub-note" style="color:#60a5fa;margin-top:4px;">Competencia: +${d.prof} | XP: ${d.xp_current.toLocaleString()} / ${d.xp_next.toLocaleString()} | Dote Origen: ${st.origin_feat || '—'}</div>
+    <div style="display:flex;gap:10px;align-items:center;">
+      ${portraitHtml}
+      <div style="flex:1;">
+        <div style="font-size:1.15rem;font-weight:bold;">${d.name} <span style="color:var(--gold);">(Nivel ${d.level})</span></div>
+        <div class="sub-note">${d.species} • ${d.char_class} (${d.subclass}) • Trasfondo: ${d.background}</div>
+        <div class="sub-note" style="color:#60a5fa;margin-top:4px;">Competencia: +${d.prof} | XP: ${d.xp_current.toLocaleString()} / ${d.xp_next.toLocaleString()}</div>
+      </div>
+    </div>
   `;
+
+  const ds = st.death_saves || {successes: 0, failures: 0};
+  for (let i = 0; i < 3; i++) {
+    const sEl = document.getElementById(`ds_s${i}`);
+    const fEl = document.getElementById(`ds_f${i}`);
+    if (sEl) sEl.checked = i < (ds.successes || 0);
+    if (fEl) fEl.checked = i < (ds.failures || 0);
+  }
 
   document.getElementById('acVal').textContent = d.ac;
   document.getElementById('initVal').textContent = d.init;
@@ -647,14 +692,15 @@ function renderShopCatalogMobile() {
     html += `<div style="background:#334155;padding:6px 10px;border-radius:6px;font-weight:bold;margin-top:8px;font-size:0.85rem;color:var(--gold);">${catName}</div>`;
     items.forEach(it => {
       const safeItem = encodeURIComponent(JSON.stringify(it));
+      const wLabel = it.display_weight || `${it.weight_kg} kg`;
       html += `
         <div class="row-item">
           <div style="flex:1;">
-            <strong>${it.name}</strong> <span class="sub-note">(${it.weight_kg} kg)</span>
+            <strong>${it.name}</strong> <span class="sub-note">(${wLabel})</span>
             ${it.desc ? `<div class="sub-note">${it.desc}</div>` : ''}
           </div>
           <div style="text-align:right;">
-            <div style="color:var(--gold);font-weight:bold;font-size:0.85rem;margin-bottom:3px;">${it. adjusted_price_str}</div>
+            <div style="color:var(--gold);font-weight:bold;font-size:0.85rem;margin-bottom:3px;">${it.adjusted_price_str}</div>
             <button class="btn-sm" style="background:var(--green);" onclick="buyShopItemMobile('${safeItem}')">Comprar</button>
           </div>
         </div>
@@ -1042,12 +1088,21 @@ async function saveCombatAndEquipment() {
       mastery: document.getElementById(`w_mast_${i}`).value
     });
   }
+  let dsSucc = 0;
+  let dsFail = 0;
+  for (let i = 0; i < 3; i++) {
+    const sEl = document.getElementById(`ds_s${i}`);
+    const fEl = document.getElementById(`ds_f${i}`);
+    if (sEl && sEl.checked) dsSucc++;
+    if (fEl && fEl.checked) dsFail++;
+  }
   const payload = {
     id: currentCharId,
     hp_current: document.getElementById('hpCurrInput').value,
     hp_max: document.getElementById('hpMaxInput').value,
     hp_temp: document.getElementById('hpTempInput').value,
     heroic_inspiration: document.getElementById('inspCheck').checked,
+    death_saves: {successes: dsSucc, failures: dsFail},
     equipped_armor: document.getElementById('eqArmorSelect').value,
     equipped_shield: document.getElementById('eqShieldCheck').checked,
     armor_magic_bonus: parseInt(document.getElementById('eqAcBonus').value || 0),
@@ -1430,17 +1485,18 @@ function renderInvListHtml(items, targetKey) {
 function renderMobileInventories() {
   if (!charData) return;
   const d = charData;
+  const u = d.weight_unit || 'kg';
   updateCatalogDestinations();
 
   const overChar = d.char_total_kg > d.char_max_kg;
   const cBadge = document.getElementById('charWeightBadge');
-  cBadge.textContent = `${d.char_total_kg.toFixed(1)} / ${d.char_max_kg.toFixed(1)} kg` + (overChar ? ' ⚠️ SOBRECARGA' : '');
+  cBadge.textContent = `${d.char_total_kg.toFixed(1)} / ${d.char_max_kg.toFixed(1)} ${u}` + (overChar ? ' ⚠️ SOBRECARGA' : '');
   cBadge.style.color = overChar ? 'var(--red)' : 'var(--green)';
   document.getElementById('charInvContainer').innerHTML = renderInvListHtml(d.char_inv_tree, 'char');
 
   const overMount = d.mount_max_kg > 0 && d.mount_total_kg > d.mount_max_kg;
   const mBadge = document.getElementById('mountWeightBadge');
-  mBadge.textContent = `${d.mount_total_kg.toFixed(1)} / ${d.mount_max_kg.toFixed(1)} kg` + (overMount ? ' ⚠️ EXCESO' : '');
+  mBadge.textContent = `${d.mount_total_kg.toFixed(1)} / ${d.mount_max_kg.toFixed(1)} ${u}` + (overMount ? ' ⚠️ EXCESO' : '');
   mBadge.style.color = overMount ? 'var(--red)' : '#60a5fa';
   document.getElementById('mountInvContainer').innerHTML = renderInvListHtml(d.mount_inv_tree, 'mount');
 }
@@ -1508,10 +1564,13 @@ async function loadLiveTableMobile() {
   document.getElementById('liveHandoutTitle').textContent = `🖼️ ${st.handout_title || 'Sin imagen proyectada'}`;
   document.getElementById('liveHandoutCaption').textContent = st.handout_caption || '';
   const imgBox = document.getElementById('liveHandoutImgBox');
-  if (st.handout_b64) {
-    imgBox.innerHTML = `<img src="data:image/jpeg;base64,${st.handout_b64}" style="max-width:100%;border-radius:8px;border:1px solid var(--border);">`;
-  } else {
-    imgBox.innerHTML = '<div class="sub-note">Cuando el DM proyecte un mapa, carta o ilustración del manual, aparecerá aquí.</div>';
+  if (st.handout_b64 !== lastLiveHandoutB64) {
+    lastLiveHandoutB64 = st.handout_b64;
+    if (st.handout_b64) {
+      imgBox.innerHTML = `<img src="data:image/jpeg;base64,${st.handout_b64}" style="max-width:100%;border-radius:8px;border:1px solid var(--border);">`;
+    } else {
+      imgBox.innerHTML = '<div class="sub-note">Cuando el DM proyecte un mapa, carta o ilustración del manual, aparecerá aquí.</div>';
+    }
   }
 }
 </script>
@@ -1556,6 +1615,16 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
                 return
 
             if parsed.path == "/api/catalogs":
+                edition = db.get_active_edition()
+                if edition == "5e":
+                    f_styles = FIGHTING_STYLES_5E
+                    invocs = ELD_INVOCATIONS_5E
+                    weight_unit = "lb"
+                else:
+                    f_styles = FIGHTING_STYLES_55E
+                    invocs = ELD_INVOCATIONS_55E
+                    weight_unit = "kg"
+
                 std_by_class = {
                     "Bárbaro":   {"Fuerza": 15, "Destreza": 13, "Constitución": 14, "Inteligencia": 10, "Sabiduría": 12, "Carisma": 8},
                     "Bardo":     {"Fuerza": 8,  "Destreza": 14, "Constitución": 12, "Inteligencia": 13, "Sabiduría": 10, "Carisma": 15},
@@ -1570,25 +1639,31 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
                     "Paladín":   {"Fuerza": 15, "Destreza": 10, "Constitución": 13, "Inteligencia": 8,  "Sabiduría": 12, "Carisma": 14},
                     "Pícaro":    {"Fuerza": 12, "Destreza": 15, "Constitución": 13, "Inteligencia": 14, "Sabiduría": 10, "Carisma": 8},
                 }
+
+                armors_cat = Character55eRules.get_armors_catalog(edition)
+                weapons_cat = Character55eRules.get_weapons_catalog(edition)
+
                 self._send_json({
-                    "species_full": SPECIES_55E,
-                    "backgrounds_full": BACKGROUNDS_55E,
-                    "classes_full": CLASSES_55E,
+                    "edition": edition,
+                    "weight_unit": weight_unit,
+                    "species_full": Character55eRules.get_species_catalog(edition),
+                    "backgrounds_full": Character55eRules.get_backgrounds_catalog(edition),
+                    "classes_full": Character55eRules.get_classes_catalog(edition),
                     "abilities": ABILITIES,
                     "skills": [sk[0] for sk in SKILLS_55E],
                     "languages": LANGUAGES_55E,
                     "instruments": MUSICAL_INSTRUMENTS,
                     "gaming_sets": GAMING_SETS,
                     "lineages": SPECIES_LINEAGES_55E,
-                    "invocations": ELD_INVOCATIONS_55E,
-                    "fighting_styles": FIGHTING_STYLES_55E,
+                    "invocations": invocs,
+                    "fighting_styles": f_styles,
                     "general_feats": GENERAL_FEATS_55E,
                     "epic_boons": EPIC_BOONS_55E,
-                    "armors": list(ARMORS_CATALOG_55E.keys()),
-                    "weapons": list(WEAPONS_CATALOG_55E.keys()),
-                    "weapons_full": WEAPONS_CATALOG_55E,
-                    "mounts": MOUNTS_CAPACITY_KG,
-                    "items_by_cat": ITEMS_CATALOG_BY_CATEGORY,
+                    "armors": list(armors_cat.keys()),
+                    "weapons": list(weapons_cat.keys()),
+                    "weapons_full": weapons_cat,
+                    "mounts": Character55eRules.get_mounts_catalog(edition),
+                    "items_by_cat": Character55eRules.get_items_catalog_by_category(edition),
                     "spells": Character55eRules.get_combined_spells_catalog(db),
                     "magic_attune": MAGIC_ITEMS_ATTUNEMENT_55E,
                     "std_scores": std_by_class
@@ -1604,7 +1679,8 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
                 return
 
             if parsed.path == "/api/characters":
-                chars = db.get_all_characters()
+                edition = db.get_active_edition()
+                chars = db.get_all_characters(edition)
                 self._send_json([
                     {"id": c["id"], "name": c["name"], "level": c["level"], "species": c["species"], "char_class": c["char_class"]}
                     for c in chars
@@ -1643,7 +1719,7 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
                     stats = char.get("stats", {})
                     for k in ("hp_current", "hp_max", "hp_temp", "equipped_armor", "equipped_shield",
                               "armor_magic_bonus", "heroic_inspiration", "weapons", "coins",
-                              "adventure_notes", "attuned_items"):
+                              "adventure_notes", "attuned_items", "death_saves"):
                         if k in payload:
                             stats[k] = payload[k]
 
@@ -1704,23 +1780,24 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": False, "error": str(e)}, status=500)
 
     def _build_shop_payload(self, db: DatabaseManager) -> dict:
+        edition = db.get_active_edition()
         st = db.get_shop_state()
         preset = st.get("shop_preset", "Mercado Completo (Todo el Cap. 6)")
         mult = float(st.get("price_multiplier", 1.0))
 
-        full_cats = dict(ITEMS_CATALOG_BY_CATEGORY)
-        full_cats["Taberna, Comida y Posada (Pág. 231)"] = TAVERN_AND_SERVICES_55E
+        full_cats = dict(Character55eRules.get_items_catalog_by_category(edition))
+        full_cats["Taberna, Comida y Posada"] = TAVERN_AND_SERVICES_55E
 
         if "Taberna" in preset:
-            allowed_keys = ["Taberna, Comida y Posada (Pág. 231)"]
+            allowed_keys = ["Taberna, Comida y Posada"]
         elif "Herrería" in preset:
-            allowed_keys = ["Armas (Capítulo 6)", "Armaduras y Escudos (Capítulo 6)"]
+            allowed_keys = [k for k in full_cats.keys() if "Armas" in k or "Armaduras" in k]
         elif "Bazar" in preset:
             allowed_keys = ["Contenedores y Recipientes", "Paquetes de Equipo (Auto-Desplegables)", "Equipo de Aventureros"]
         elif "Alquimia" in preset:
             allowed_keys = ["Munición, Canalizadores y Símbolos", "Herramientas, Instrumentos y Juegos", "Equipo de Aventureros"]
         elif "Establo" in preset:
-            allowed_keys = ["Arreos, Sillas y Vehículos (Pág. 230)", "Contenedores y Recipientes"]
+            allowed_keys = [k for k in full_cats.keys() if "Arreos" in k or "Contenedores" in k]
         else:
             allowed_keys = list(full_cats.keys())
 
@@ -1735,11 +1812,16 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
                 item_copy = dict(it)
                 item_copy["cost_cp"] = cp_cost
                 item_copy["adjusted_price_str"] = Character55eRules.format_cp_to_coins_str(cp_cost)
+                if edition == "5e":
+                    item_copy["display_weight"] = f"{round(float(it.get('weight_kg', 0.0)) * 2.0, 2)} lb"
+                else:
+                    item_copy["display_weight"] = f"{it.get('weight_kg', 0.0)} kg"
                 processed.append(item_copy)
             if processed:
                 categories_out[k] = processed
 
         return {
+            "edition": edition,
             "shop_name": st.get("shop_name", "Mercado del Pueblo"),
             "shop_preset": preset,
             "price_multiplier": mult,
@@ -1860,48 +1942,77 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
         return True, f"💰 Vendiste 1x '{obj_name}' por {earned_str} (50% del valor de compra según Pág. 213)."
 
     def _save_full_shard_progression(self, db: DatabaseManager, p: dict) -> int:
+        edition = db.get_active_edition()
         cid = p.get("id")
-        existing = db.get_character_by_id(int(cid)) if cid else None
-        stats = existing.get("stats", Character55eRules.default_stats_payload()) if existing else Character55eRules.default_stats_payload()
+        if cid:
+            existing = db.get_character_by_id(int(cid))
+        else:
+            existing = None
+
+        if existing:
+            stats = existing.get("stats", Character55eRules.default_stats_payload())
+        else:
+            stats = Character55eRules.default_stats_payload()
 
         char_class = p.get("char_class", "Guerrero")
         species = p.get("species", "Humano")
         bg_name = p.get("background", "Acólito")
         level = max(1, min(20, int(p.get("level", 1))))
 
-        c_info = CLASSES_55E.get(char_class, CLASSES_55E["Guerrero"])
-        bg_info = BACKGROUNDS_55E.get(bg_name, BACKGROUNDS_55E["Acólito"])
-        sp_info = SPECIES_55E.get(species, SPECIES_55E["Humano"])
+        classes_cat = Character55eRules.get_classes_catalog(edition)
+        bg_cat = Character55eRules.get_backgrounds_catalog(edition)
+        species_cat = Character55eRules.get_species_catalog(edition)
+
+        c_info = classes_cat.get(char_class, classes_cat["Guerrero"])
+        bg_info = bg_cat.get(bg_name, list(bg_cat.values())[0])
+        sp_info = species_cat.get(species, list(species_cat.values())[0])
 
         base_scores = p.get("base_scores", {ab: 10 for ab in ABILITIES})
         bg_bonuses = p.get("bg_bonuses", {"+1_a": "Ninguno", "+1_b": "Ninguno", "+1_c": "Ninguno"})
         prog_data = p.get("level_progression_choices", {})
 
         final_scores = dict(base_scores)
-        for _, ab_chosen in bg_bonuses.items():
-            if ab_chosen in final_scores:
-                final_scores[ab_chosen] = min(20, final_scores[ab_chosen] + 1)
+        if edition == "5e":
+            for ab_k, bonus_v in sp_info.get("ability_bonuses", {}).items():
+                if ab_k in final_scores:
+                    final_scores[ab_k] = min(20, final_scores[ab_k] + bonus_v)
+        else:
+            for _, ab_chosen in bg_bonuses.items():
+                if ab_chosen in final_scores:
+                    final_scores[ab_chosen] = min(20, final_scores[ab_chosen] + 1)
 
-        for asi_lvl in Character55eRules.get_asi_levels(char_class):
+        for asi_lvl in Character55eRules.get_asi_levels(char_class, edition):
             if asi_lvl <= level:
                 for key_ab in (f"lvl{asi_lvl}_ab1", f"lvl{asi_lvl}_ab2"):
                     ab_up = prog_data.get(key_ab, "Ninguno")
                     if ab_up in final_scores:
                         final_scores[ab_up] = min(20, final_scores[ab_up] + 1)
 
+        stats["edition"] = edition
         stats["base_scores"] = base_scores
         stats["scores"] = final_scores
         stats["bg_bonuses"] = bg_bonuses
         stats["level_progression_choices"] = prog_data
         stats["species_lineage"] = prog_data.get("species_lineage", "Ninguno")
         stats["human_extra_skill"] = prog_data.get("human_extra_skill", "Ninguna")
-        stats["origin_feat"] = bg_info["feat"]
-        stats["speed"] = "10,5 m" if "Elfo del Bosque" in stats["species_lineage"] else sp_info["speed"]
+
+        if edition == "5e":
+            origin_feat_val = bg_info.get("feature", "")
+            speed_val = sp_info.get("speed", "30 pies")
+        else:
+            origin_feat_val = bg_info.get("feat", "")
+            if "Elfo del Bosque" in stats["species_lineage"]:
+                speed_val = "10,5 m"
+            else:
+                speed_val = sp_info.get("speed", "9 m")
+
+        stats["origin_feat"] = origin_feat_val
+        stats["speed"] = speed_val
         stats["xp_current"] = int(p.get("xp_current", stats.get("xp_current", 0)))
 
         cls_skills = p.get("class_skill_choices", [])
         skilled_skills = p.get("skilled_feat_choices", [])
-        bg_fixed = bg_info["skills"]
+        bg_fixed = bg_info.get("skills", [])
         extra_sk = [v for k, v in prog_data.items() if ("_sk" in k or "human_extra_skill" in k) and v not in ("Ninguna", "Ninguno", "")]
         exp_skills = [v for k, v in prog_data.items() if "_exp_" in k and v not in ("Ninguna", "Ninguno", "")]
 
@@ -1923,16 +2034,24 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
             mods
         )
 
-        max_hp = Character55eRules.calculate_max_hp(char_class, level, mods["Constitución"], bg_info["feat"], species)
+        unlock_lvl = Character55eRules.get_subclass_unlock_level(char_class, edition)
+        if level >= unlock_lvl:
+            chosen_sub = prog_data.get("lvl3_subclass", "Ninguna")
+            if chosen_sub != "Ninguna":
+                subclass = chosen_sub
+            else:
+                subclass = c_info["subclasses"][0]
+        else:
+            subclass = f"Se elige en Nivel {unlock_lvl}"
+
+        max_hp = Character55eRules.calculate_max_hp(
+            char_class, level, mods["Constitución"], origin_feat_val,
+            species, edition, stats["species_lineage"], subclass
+        )
         stats["hp_max"] = str(max_hp)
         if not existing:
             stats["hp_current"] = str(max_hp)
             stats["hit_dice_current"] = level
-
-        subclass = "Se elige en Nivel 3"
-        if level >= 3:
-            chosen_sub = prog_data.get("lvl3_subclass", "Ninguna")
-            subclass = chosen_sub if chosen_sub != "Ninguna" else c_info["subclasses"][0]
 
         return db.save_character({
             "id": cid,
@@ -2055,16 +2174,20 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
             return f"⛺ Descanso Corto: +{healed} PG curados ({hp_curr} → {new_hp}/{hp_max}). Dados restantes: {avail - spent}/{lvl}."
 
         if action == "long_rest":
+            edition = db.get_active_edition()
             hp_max = int(stats.get("hp_max", 10))
+            curr_hd = int(stats.get("hit_dice_current", lvl))
+            new_hd = Character55eRules.get_long_rest_hit_dice(lvl, curr_hd, edition)
             stats["hp_current"] = str(hp_max)
             stats["hp_temp"] = "0"
-            stats["hit_dice_current"] = lvl
+            stats["hit_dice_current"] = new_hd
             stats["spent_spell_slots"] = {}
-            if char.get("species") == "Humano":
+            if edition == "5.5e" and char.get("species") == "Humano":
                 stats["heroic_inspiration"] = True
+            stats["death_saves"] = {"successes": 0, "failures": 0}
             char["stats"] = stats
             db.save_character(char)
-            return f"🌙 Descanso Largo completado: PG ({hp_max}/{hp_max}), Dados de Golpe ({lvl}/{lvl}) y Espacios de Conjuro restaurados."
+            return f"Descanso Largo ({edition}) completado: PG ({hp_max}/{hp_max}), Dados de Golpe ({new_hd}/{lvl}) y Espacios restaurados."
 
         if action == "level_up":
             if lvl >= 20:
@@ -2092,6 +2215,14 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
         return "OK"
 
     def _format_char_for_mobile(self, c: dict) -> dict:
+        edition = self._get_db().get_active_edition()
+        if edition == "5e":
+            weight_mult = 2.0
+            weight_unit = "lb"
+        else:
+            weight_mult = 1.0
+            weight_unit = "kg"
+
         stats = c.get("stats", {})
         lvl = int(c.get("level", 1))
         c_name = c.get("char_class", "Guerrero")
@@ -2106,14 +2237,18 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
 
         mods = {ab: Character55eRules.get_modifier(int(scores.get(ab, 10))) for ab in ABILITIES}
 
-        abilities_list = [
-            {
-                "name": ab, "score": scores.get(ab, 10),
+        abilities_list = []
+        for ab in ABILITIES:
+            if saves_prof.get(ab):
+                save_total = mods[ab] + prof
+            else:
+                save_total = mods[ab]
+            abilities_list.append({
+                "name": ab,
+                "score": scores.get(ab, 10),
                 "mod": Character55eRules.format_mod(mods[ab]),
-                "save": Character55eRules.format_mod(mods[ab] + (prof if saves_prof.get(ab) else 0))
-            }
-            for ab in ABILITIES
-        ]
+                "save": Character55eRules.format_mod(save_total)
+            })
 
         skills_list = []
         skill_totals = {}
@@ -2149,22 +2284,31 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
             ab_u = w.get("ability", "Fuerza")
             ab_m = mods.get(ab_u, 0)
             m_name = w.get("mastery", "Ninguna")
+            if edition == "5e":
+                m_desc = "Sin Maestrías de Armas en 5e (2014)."
+            else:
+                m_desc = WEAPON_MASTERIES_55E.get(m_name, "")
             weapons_out.append({
-                "name": w.get("name", ""), "damage": w.get("damage", ""),
+                "name": w.get("name", ""),
+                "damage": Character55eRules.format_distance_for_edition(w.get("damage", ""), edition),
                 "atk": f"Atq {Character55eRules.format_mod(ab_m + prof)} | Daño {Character55eRules.format_mod(ab_m)}",
-                "mastery": m_name, "mastery_desc": WEAPON_MASTERIES_55E.get(m_name, "")
+                "mastery": m_name,
+                "mastery_desc": m_desc
             })
 
-        slots_dict = Character55eRules.get_spell_slots_by_level(c_name, sub_name, lvl)
-        always_prep = Character55eRules.get_always_prepared_spells(c_name, sub_name, lvl)
-        sp_abil = CLASSES_55E.get(c_name, {}).get("spell_ability") or "Carisma"
+        classes_cat = Character55eRules.get_classes_catalog(edition)
+        slots_dict = Character55eRules.get_spell_slots_by_level(c_name, sub_name, lvl, edition)
+        always_prep = Character55eRules.get_always_prepared_spells(c_name, sub_name, lvl, edition)
+        sp_abil = classes_cat.get(c_name, {}).get("spell_ability") or "Carisma"
         sp_mod = mods.get(sp_abil, 0)
 
-        feats = Character55eRules.get_features_up_to_level(c["species"], c_name, sub_name, lvl)
+        feats = Character55eRules.get_features_up_to_level(
+            c["species"], c_name, sub_name, lvl, edition, stats.get("species_lineage", "")
+        )
         feat_lines = [
-            f"=== RESUMEN DE RASGOS ({c_name.upper()} NIVEL {lvl}) ===",
+            f"=== RESUMEN DE RASGOS ({c_name.upper()} NIVEL {lvl} - {edition}) ===",
             f"• Idiomas: {', '.join(stats.get('language_choices', ['Común']))}",
-            f"• Dote de Origen: {stats.get('origin_feat', '')}"
+            f"• Dote / Rasgo de Trasfondo: {stats.get('origin_feat', '')}"
         ]
         if stats.get("instrument_choices"):
             feat_lines.append(f"• Instrumentos: {', '.join(stats['instrument_choices'])}")
@@ -2183,7 +2327,7 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
             t_kg = Character55eRules.calculate_item_tree_weight(it)
             char_total_kg += t_kg
             item_copy = dict(it)
-            item_copy["total_kg"] = t_kg
+            item_copy["total_kg"] = round(t_kg * weight_mult, 2)
             char_inv_tree.append(item_copy)
 
         mount_inv_tree = []
@@ -2192,22 +2336,26 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
             t_kg = Character55eRules.calculate_item_tree_weight(it)
             mount_total_kg += t_kg
             item_copy = dict(it)
-            item_copy["total_kg"] = t_kg
+            item_copy["total_kg"] = round(t_kg * weight_mult, 2)
             mount_inv_tree.append(item_copy)
 
         mount_type = stats.get("mount_type", "Sin Montura")
+        mounts_cat = Character55eRules.get_mounts_catalog(edition)
 
         return {
+            "edition": edition,
+            "weight_unit": weight_unit,
+            "portrait_b64": stats.get("portrait_b64", ""),
             "id": c["id"], "name": c["name"], "player_name": c.get("player_name", ""),
             "level": lvl, "species": c["species"], "char_class": c_name,
             "subclass": sub_name, "background": c["background"], "prof": prof,
             "xp_current": int(stats.get("xp_current", 0)),
             "xp_next": Character55eRules.get_next_level_xp(lvl),
             "hit_dice": f"{stats.get('hit_dice_current', lvl)}/{lvl}",
-            "hit_die_faces": CLASSES_55E.get(c_name, {}).get("hit_die", 8),
+            "hit_die_faces": classes_cat.get(c_name, {}).get("hit_die", 8),
             "ac": stats.get("armor_class", 10),
             "init": Character55eRules.format_mod(mods.get("Destreza", 0)),
-            "speed": stats.get("speed", "9 m"),
+            "speed": Character55eRules.format_distance_for_edition(stats.get("speed", "9 m"), edition),
             "hp_curr": stats.get("hp_current", 10), "hp_max": stats.get("hp_max", 10), "hp_temp": stats.get("hp_temp", 0),
             "coins": stats.get("coins", {"cp": 0, "sp": 0, "gp": 0}),
             "abilities": abilities_list, "skills": skills_list, "passives_text": passives_text,
@@ -2215,16 +2363,16 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
             "spell_ability": sp_abil, "spell_dc": 8 + prof + sp_mod, "spell_atk": prof + sp_mod,
             "slots_dict": slots_dict, "always_prepared": always_prep,
             "max_cantrips": Character55eRules.get_cantrips_max(c_name, lvl, prog_order),
-            "max_prepared": Character55eRules.get_prepared_spells_max(c_name, lvl),
-            "max_spell_lvl": Character55eRules.get_max_spell_level(c_name, lvl),
+            "max_prepared": Character55eRules.get_prepared_spells_max(c_name, lvl, edition, sp_mod),
+            "max_spell_lvl": Character55eRules.get_max_spell_level(c_name, lvl, edition),
             "features_summary": "\n".join(feat_lines),
             "char_inv_tree": char_inv_tree,
-            "char_total_kg": round(char_total_kg, 2),
-            "char_max_kg": Character55eRules.get_carrying_capacity_kg(int(scores.get("Fuerza", 10)), c["species"]),
+            "char_total_kg": round(char_total_kg * weight_mult, 2),
+            "char_max_kg": Character55eRules.get_carrying_capacity(int(scores.get("Fuerza", 10)), c["species"], edition),
             "mount_type": mount_type,
             "mount_inv_tree": mount_inv_tree,
-            "mount_total_kg": round(mount_total_kg, 2),
-            "mount_max_kg": MOUNTS_CAPACITY_KG.get(mount_type, 0.0),
+            "mount_total_kg": round(mount_total_kg * weight_mult, 2),
+            "mount_max_kg": mounts_cat.get(mount_type, 0.0),
             "stats": stats
         }
 

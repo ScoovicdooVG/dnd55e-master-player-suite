@@ -13,3 +13,7 @@ dist/
 *.pdf
 dnd_data.db
 dnd_data.db-journal
+
+# Carpeta de respaldos y archivos de base de datos
+backups/
+*.db
